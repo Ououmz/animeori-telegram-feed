@@ -16,7 +16,6 @@ MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
-MANUAL_LOGOS_FILE = "manual_logos.json"
 
 HEADERS = {
     "User-Agent": (
@@ -39,43 +38,6 @@ def load_seen() -> set[str]:
 def save_seen(seen: set[str]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, indent=2, ensure_ascii=False)
-
-
-def load_manual_logos() -> dict[str, str]:
-    if not os.path.exists(MANUAL_LOGOS_FILE):
-        return {}
-    try:
-        with open(MANUAL_LOGOS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {}
-        return {str(k): str(v).strip() if v is not None else "" for k, v in data.items()}
-    except Exception as exc:
-        print(f"[Manual logos] Errore lettura {MANUAL_LOGOS_FILE}: {exc}")
-        return {}
-
-
-def save_manual_logos(manual_logos: dict[str, str]) -> None:
-    ordered = {k: manual_logos[k] for k in sorted(manual_logos.keys(), key=lambda s: s.lower())}
-    with open(MANUAL_LOGOS_FILE, "w", encoding="utf-8") as f:
-        json.dump(ordered, f, indent=2, ensure_ascii=False)
-
-
-def register_missing_manual_logo(query_title: str, manual_logos: dict[str, str]) -> bool:
-    existing_key = next((k for k in manual_logos if k.lower() == query_title.lower()), None)
-    if existing_key is not None:
-        return False
-    manual_logos[query_title] = ""
-    return True
-
-
-def find_manual_logo_url(query_title: str, manual_logos: dict[str, str]) -> str:
-    if query_title in manual_logos and manual_logos[query_title]:
-        return manual_logos[query_title]
-    for k, v in manual_logos.items():
-        if k.lower() == query_title.lower() and v:
-            return v
-    return ""
 
 
 def parse_timestamp(ep: dict) -> float | None:
@@ -273,13 +235,7 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def get_anime_logo(
-    ep: dict,
-    title: str,
-    logo_cache: dict[str, Image.Image | None],
-    manual_logos: dict[str, str],
-    manual_dirty: list[bool],
-) -> Image.Image | None:
+def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | None]) -> Image.Image | None:
     query_title = clean_title_for_logo(title)
     cache_key = query_title.lower()
 
@@ -288,17 +244,6 @@ def get_anime_logo(
         return cached.copy() if cached is not None else None
 
     logo_img = fetch_from_fanart_tv(ep, query_title)
-    if logo_img is None:
-        if register_missing_manual_logo(query_title, manual_logos):
-            manual_dirty[0] = True
-            print(f"[Manual logos] Aggiunto '{query_title}' in {MANUAL_LOGOS_FILE} (in attesa di link)")
-
-        manual_url = find_manual_logo_url(query_title, manual_logos)
-        if manual_url:
-            logo_img = download_rgba_image(manual_url)
-            if logo_img is not None:
-                print(f"[Manual logos] Logo caricato da link manuale per '{query_title}'")
-
     logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
     return logo_img
 
@@ -449,8 +394,6 @@ def build_banner_image(
     photo_url: str,
     title: str,
     logo_cache: dict[str, Image.Image | None],
-    manual_logos: dict[str, str],
-    manual_dirty: list[bool],
 ) -> bytes | None:
     if not photo_url:
         return None
@@ -482,7 +425,7 @@ def build_banner_image(
         cover.putalpha(alpha_mask)
         canvas_rgba.alpha_composite(cover, dest=(0, 0))
 
-        logo_img = get_anime_logo(ep, title, logo_cache, manual_logos, manual_dirty)
+        logo_img = get_anime_logo(ep, title, logo_cache)
         canvas_rgba = draw_logo_or_title(canvas_rgba, title, left_w=left_w, logo_img=logo_img)
 
         canvas = canvas_rgba.convert("RGB")
@@ -538,19 +481,14 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     return True
 
 
-def send_telegram_item(
-    ep: dict,
-    logo_cache: dict[str, Image.Image | None],
-    manual_logos: dict[str, str],
-    manual_dirty: list[bool],
-) -> bool:
+def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> bool:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
     reply_markup = build_reply_markup(ep)
     photo_url = build_image_url(ep)
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache, manual_logos, manual_dirty)
+    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
     if banner_bytes:
         resp = telegram_post_with_retry(
             f"{api_base}/sendPhoto",
@@ -602,8 +540,6 @@ def main() -> None:
 
     ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
-    manual_logos = load_manual_logos()
-    manual_dirty = [False]
     logo_cache: dict[str, Image.Image | None] = {}
     new_sent = 0
 
@@ -611,14 +547,10 @@ def main() -> None:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
-        if send_telegram_item(ep, logo_cache, manual_logos, manual_dirty):
+        if send_telegram_item(ep, logo_cache):
             seen.add(ep_id)
             new_sent += 1
             time.sleep(1.5)
-
-    if manual_dirty[0]:
-        save_manual_logos(manual_logos)
-        print(f"Aggiornato {MANUAL_LOGOS_FILE} con nuovi titoli senza logo Fanart.tv.")
 
     if new_sent > 0:
         save_seen(seen)
