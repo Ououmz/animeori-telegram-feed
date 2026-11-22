@@ -4,6 +4,8 @@ from io import BytesIO
 import json
 import os
 import re
+from urllib.parse import quote_plus, urljoin
+from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 import requests
 
@@ -13,7 +15,15 @@ FEED_URL = os.environ["EPISODES_FEED_URL"]
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://animeori.edgeone.dev").rstrip("/")
 MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").rstrip("/")
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
+FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+}
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
 
@@ -109,6 +119,129 @@ def is_dub_ita(title: str) -> bool:
     )
 
 
+def clean_title_for_logo(title: str) -> str:
+    cleaned = re.sub(r"\(\s*ITA\s*\)", "", title, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bSUB\s*ITA\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bITA\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bHD\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—|")
+    return cleaned or title.strip()
+
+
+def download_rgba_image(url: str) -> Image.Image | None:
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        img = Image.open(BytesIO(r.content)).convert("RGBA")
+        if img.width < 20 or img.height < 10:
+            return None
+        return img
+    except Exception as exc:
+        print(f"Errore download immagine logo ({url}):", exc)
+        return None
+
+
+def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
+    if not FANART_API_KEY:
+        return None
+
+    show_id = ""
+    for key in ("tvdb_id", "tvdbId", "tmdb_id", "tmdbId", "show_id", "showId"):
+        val = ep.get(key)
+        if val is not None and str(val).strip().isdigit():
+            show_id = str(val).strip()
+            break
+
+    if not show_id:
+        return None
+
+    try:
+        url = f"https://webservice.fanart.tv/v3/tv/{show_id}"
+        resp = requests.get(url, params={"api_key": FANART_API_KEY}, headers=HEADERS, timeout=20)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        for field in ("hdtvlogo", "clearlogo"):
+            items = data.get(field)
+            if isinstance(items, list) and items:
+                preferred = next(
+                    (it for it in items if str(it.get("lang", "")).lower() in ("it", "en", "ja")),
+                    items[0],
+                )
+                logo_url = str(preferred.get("url") or "").strip()
+                logo_img = download_rgba_image(logo_url)
+                if logo_img is not None:
+                    print(f"Logo trovato su Fanart.tv per '{query_title}'")
+                    return logo_img
+    except Exception as exc:
+        print(f"Errore Fanart.tv per '{query_title}':", exc)
+
+    return None
+
+
+def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
+    try:
+        search_url = f"https://seeklogo.com/search?q={quote_plus(query_title)}"
+        resp = requests.get(search_url, headers=HEADERS, timeout=20)
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        candidates: list[str] = []
+
+        for img_tag in soup.find_all("img"):
+            src = str(img_tag.get("src") or img_tag.get("data-src") or "").strip()
+            if not src:
+                continue
+            full_src = urljoin("https://seeklogo.com", src)
+            if "seeklogo" in full_src.lower() or "images.seeklogo.com" in full_src.lower():
+                if not any(bad in full_src.lower() for bad in ("avatar", "icon", "sprite", "banner-ad")):
+                    candidates.append(full_src)
+
+        for a_tag in soup.find_all("a", href=True):
+            href = str(a_tag["href"]).strip()
+            if "/vector-logo/" in href:
+                logo_page_url = urljoin("https://seeklogo.com", href)
+                page_resp = requests.get(logo_page_url, headers=HEADERS, timeout=20)
+                if page_resp.status_code == 200:
+                    page_soup = BeautifulSoup(page_resp.text, "html.parser")
+                    for p_img in page_soup.find_all("img"):
+                        p_src = str(p_img.get("src") or p_img.get("data-src") or "").strip()
+                        if p_src and ("images.seeklogo.com" in p_src.lower() or "seeklogo" in p_src.lower()):
+                            full_p_src = urljoin("https://seeklogo.com", p_src)
+                            if full_p_src not in candidates:
+                                candidates.insert(0, full_p_src)
+                break
+
+        for cand_url in candidates[:4]:
+            logo_img = download_rgba_image(cand_url)
+            if logo_img is not None:
+                print(f"Logo trovato su Seeklogo per '{query_title}'")
+                return logo_img
+    except Exception as exc:
+        print(f"Errore Seeklogo per '{query_title}':", exc)
+
+    return None
+
+
+def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | None]) -> Image.Image | None:
+    query_title = clean_title_for_logo(title)
+    cache_key = query_title.lower()
+
+    if cache_key in logo_cache:
+        cached = logo_cache[cache_key]
+        return cached.copy() if cached is not None else None
+
+    logo_img = fetch_from_fanart_tv(ep, query_title)
+    if logo_img is None:
+        logo_img = fetch_from_seeklogo(query_title)
+
+    logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
+    return logo_img
+
+
 def format_caption(ep: dict) -> str:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     raw_ep = str(ep.get("episode") or "").strip()
@@ -181,7 +314,6 @@ def build_gradient_overlay(width: int, height: int) -> Image.Image:
 
 
 def apply_black_if_too_dark(ambilight_rgba: Image.Image, left_w: int, threshold: float = 48.0) -> Image.Image:
-    """Se l'area destra sfocata è troppo scura, passa a uno sfondo nero pulito."""
     width, height = ambilight_rgba.size
     right_crop = ambilight_rgba.crop((left_w, 0, width, height)).convert("L")
     avg_luma = ImageStat.Stat(right_crop).mean[0]
@@ -189,18 +321,78 @@ def apply_black_if_too_dark(ambilight_rgba: Image.Image, left_w: int, threshold:
     if avg_luma >= threshold:
         return ambilight_rgba
 
-    # Sotto la soglia, sfuma verso il nero pieno (0, 0, 0)
     darkness_factor = max(0.0, min(1.0, (threshold - avg_luma) / max(1.0, threshold - 15.0)))
     black_layer = Image.new("RGBA", (width, height), (0, 0, 0, 255))
-    blended = Image.blend(ambilight_rgba, black_layer, alpha=darkness_factor)
-    return blended
+    return Image.blend(ambilight_rgba, black_layer, alpha=darkness_factor)
 
 
-def build_banner_image(photo_url: str, title: str) -> bytes | None:
+def draw_logo_or_title(
+    canvas_rgba: Image.Image,
+    title: str,
+    left_w: int,
+    logo_img: Image.Image | None,
+) -> Image.Image:
+    width, height = canvas_rgba.size
+    right_x0 = left_w + 48
+    right_width = width - right_x0 - 48
+
+    if logo_img is not None:
+        max_w = right_width
+        max_h = int(height * 0.62)
+        fitted_logo = ImageOps.contain(logo_img, (max_w, max_h), method=Image.Resampling.LANCZOS).convert("RGBA")
+
+        lx = right_x0 + (right_width - fitted_logo.width) // 2
+        ly = (height - fitted_logo.height) // 2
+
+        shadow = Image.new("RGBA", fitted_logo.size, (0, 0, 0, 0))
+        shadow_alpha = fitted_logo.split()[3].point(lambda a: int(a * 0.45))
+        shadow.putalpha(shadow_alpha)
+        canvas_rgba.alpha_composite(shadow, dest=(lx + 3, ly + 4))
+        canvas_rgba.alpha_composite(fitted_logo, dest=(lx, ly))
+        return canvas_rgba
+
+    canvas_rgb = canvas_rgba.convert("RGB")
+    draw = ImageDraw.Draw(canvas_rgb)
+    font_size = 46
+    font = find_font(font_size, bold=True)
+    lines = wrap_text_to_width(draw, title, font, right_width)
+
+    while len(lines) > 4 and font_size > 28:
+        font_size -= 4
+        font = find_font(font_size, bold=True)
+        lines = wrap_text_to_width(draw, title, font, right_width)
+
+    lines = lines[:5]
+    line_heights = []
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_heights.append(bbox[3] - bbox[1])
+
+    gap = 14
+    total_text_h = sum(line_heights) + gap * max(0, len(lines) - 1)
+    y = (height - total_text_h) // 2
+
+    for line, lh in zip(lines, line_heights):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        x = right_x0 + (right_width - lw) // 2
+        draw.text((x + 2, y + 3), line, font=font, fill=(0, 0, 0))
+        draw.text((x, y), line, font=font, fill=(255, 255, 255))
+        y += lh + gap
+
+    return canvas_rgb.convert("RGBA")
+
+
+def build_banner_image(
+    ep: dict,
+    photo_url: str,
+    title: str,
+    logo_cache: dict[str, Image.Image | None],
+) -> bytes | None:
     if not photo_url:
         return None
     try:
-        resp = requests.get(photo_url, timeout=30)
+        resp = requests.get(photo_url, headers=HEADERS, timeout=30)
         resp.raise_for_status()
         src_img = Image.open(BytesIO(resp.content)).convert("RGB")
 
@@ -209,8 +401,6 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
 
         ambilight = ImageOps.fit(src_img, (width, height), method=Image.Resampling.LANCZOS)
         ambilight = ambilight.filter(ImageFilter.GaussianBlur(radius=55)).convert("RGBA")
-
-        # Se la sfumatura a destra è troppo scura, passa al nero
         ambilight = apply_black_if_too_dark(ambilight, left_w=left_w, threshold=48.0)
 
         gradient = build_gradient_overlay(width, height)
@@ -229,38 +419,10 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
         cover.putalpha(alpha_mask)
         canvas_rgba.alpha_composite(cover, dest=(0, 0))
 
+        logo_img = get_anime_logo(ep, title, logo_cache)
+        canvas_rgba = draw_logo_or_title(canvas_rgba, title, left_w=left_w, logo_img=logo_img)
+
         canvas = canvas_rgba.convert("RGB")
-        draw = ImageDraw.Draw(canvas)
-
-        right_x0 = left_w + 48
-        right_width = width - right_x0 - 48
-        font_size = 46
-        font = find_font(font_size, bold=True)
-        lines = wrap_text_to_width(draw, title, font, right_width)
-
-        while len(lines) > 4 and font_size > 28:
-            font_size -= 4
-            font = find_font(font_size, bold=True)
-            lines = wrap_text_to_width(draw, title, font, right_width)
-
-        lines = lines[:5]
-        line_heights = []
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_heights.append(bbox[3] - bbox[1])
-
-        gap = 14
-        total_text_h = sum(line_heights) + gap * max(0, len(lines) - 1)
-        y = (height - total_text_h) // 2
-
-        for line, lh in zip(lines, line_heights):
-            bbox = draw.textbbox((0, 0), line, font=font)
-            lw = bbox[2] - bbox[0]
-            x = right_x0 + (right_width - lw) // 2
-            draw.text((x + 2, y + 3), line, font=font, fill=(0, 0, 0))
-            draw.text((x, y), line, font=font, fill=(255, 255, 255))
-            y += lh + gap
-
         out = BytesIO()
         canvas.save(out, format="JPEG", quality=90, optimize=True)
         return out.getvalue()
@@ -287,14 +449,14 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     return True
 
 
-def send_telegram_item(ep: dict) -> bool:
+def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> bool:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
     reply_markup = build_reply_markup(ep)
     photo_url = build_image_url(ep)
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    banner_bytes = build_banner_image(photo_url, raw_title)
+    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
     if banner_bytes:
         resp = requests.post(
             f"{api_base}/sendPhoto",
@@ -331,7 +493,7 @@ def send_telegram_item(ep: dict) -> bool:
 
 
 def main() -> None:
-    res = requests.get(FEED_URL, timeout=30)
+    res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
     res.raise_for_status()
     payload = res.json()
 
@@ -344,13 +506,14 @@ def main() -> None:
 
     ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
+    logo_cache: dict[str, Image.Image | None] = {}
     new_sent = 0
 
     for ep in ordered_episodes:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
-        if send_telegram_item(ep):
+        if send_telegram_item(ep, logo_cache):
             seen.add(ep_id)
             new_sent += 1
 
