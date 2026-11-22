@@ -37,14 +37,14 @@ jobs:
           FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
         run: python feed_bot.py
 
-      - name: Commit updated seen_episodes.json
+      - name: Commit updated state files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen_episodes.json
+          git add seen_episodes.json custom_logos.json
           if ! git diff --staged --quiet; then
-            git commit -m "Update seen_episodes.json"
+            git commit -m "Update seen_episodes.json and custom_logos.json"
             git push
           else
-            echo "Nessuna modifica a seen_episodes.json"
+            echo "Nessuna modifica a seen_episodes.json o custom_logos.json"
           fi
