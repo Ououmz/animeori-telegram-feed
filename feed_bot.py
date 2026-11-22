@@ -571,4 +571,97 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
         f"{api_base}/sendMessage",
         json_payload={
             "chat_id": CHAT_ID,
-            "text": te
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+            "reply_markup": reply_markup,
+        },
+    )
+    if resp is None or not resp.ok or not resp.json().get("ok", False):
+        status = resp.status_code if resp is not None else "no-resp"
+        detail = resp.text if resp is not None else ""
+        print(f"Errore sendMessage Telegram: {status} {detail}")
+        return False
+    return True
+
+
+def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> bool:
+    raw_title = str(ep.get("title") or "Nuovo episodio").strip()
+    caption = format_caption(ep)
+    reply_markup = build_reply_markup(ep)
+    photo_url = build_image_url(ep)
+    api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
+    if banner_bytes:
+        resp = telegram_post_with_retry(
+            f"{api_base}/sendPhoto",
+            data={
+                "chat_id": CHAT_ID,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(reply_markup),
+            },
+            files={"photo": ("banner.jpg", banner_bytes, "image/jpeg")},
+        )
+        if resp is not None and resp.ok and resp.json().get("ok", False):
+            return True
+        status = resp.status_code if resp is not None else "no-resp"
+        detail = resp.text if resp is not None else ""
+        print(f"Invio banner non riuscito, provo con URL: {status} {detail}")
+
+    if photo_url:
+        resp = telegram_post_with_retry(
+            f"{api_base}/sendPhoto",
+            json_payload={
+                "chat_id": CHAT_ID,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": reply_markup,
+            },
+        )
+        if resp is not None and resp.ok and resp.json().get("ok", False):
+            return True
+        status = resp.status_code if resp is not None else "no-resp"
+        detail = resp.text if resp is not None else ""
+        print(f"sendPhoto con URL non riuscito, uso sendMessage: {status} {detail}")
+
+    return send_text_message(api_base, caption, reply_markup)
+
+
+def main() -> None:
+    res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
+    res.raise_for_status()
+    payload = res.json()
+
+    if isinstance(payload, list):
+        episodes = payload
+    elif isinstance(payload, dict):
+        episodes = payload.get("episodes") or payload.get("items") or []
+    else:
+        episodes = []
+
+    ordered_episodes = order_episodes_chronologically(episodes)
+    seen = load_seen()
+    logo_cache: dict[str, Image.Image | None] = {}
+    new_sent = 0
+
+    for ep in ordered_episodes:
+        ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
+        if not ep_id or ep_id in seen:
+            continue
+        if send_telegram_item(ep, logo_cache):
+            seen.add(ep_id)
+            new_sent += 1
+            time.sleep(1.5)
+
+    if new_sent > 0:
+        save_seen(seen)
+        print(f"Pubblicati {new_sent} nuovi episodi.")
+    else:
+        print("Nessun nuovo episodio da pubblicare.")
+
+
+if __name__ == "__main__":
+    main()
