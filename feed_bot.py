@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 import os
 import re
+import time
 from urllib.parse import quote_plus, urljoin
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
@@ -17,6 +18,7 @@ MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
+LOGOS_DIR = "logos"
 
 HEADERS = {
     "User-Agent": (
@@ -128,6 +130,41 @@ def clean_title_for_logo(title: str) -> str:
     return cleaned or title.strip()
 
 
+def slugify_logo_name(text: str) -> str:
+    s = text.lower().replace("½", "1-2")
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def load_local_logo(query_title: str) -> Image.Image | None:
+    if not os.path.isdir(LOGOS_DIR):
+        return None
+
+    slug = slugify_logo_name(query_title)
+    no_year_slug = slugify_logo_name(re.sub(r"\(\s*\d{4}\s*\)", "", query_title))
+    candidates = [
+        os.path.join(LOGOS_DIR, f"{slug}.png"),
+        os.path.join(LOGOS_DIR, f"{slug.replace('-', '_')}.png"),
+    ]
+    if no_year_slug and no_year_slug != slug:
+        candidates.extend([
+            os.path.join(LOGOS_DIR, f"{no_year_slug}.png"),
+            os.path.join(LOGOS_DIR, f"{no_year_slug.replace('-', '_')}.png"),
+        ])
+
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                img = Image.open(path).convert("RGBA")
+                if img.width >= 20 and img.height >= 10:
+                    print(f"[Local logos/] Logo trovato per '{query_title}' ({path})")
+                    return img
+            except Exception as exc:
+                print(f"[Local logos/] Errore lettura '{path}': {exc}")
+
+    return None
+
+
 def download_rgba_image(url: str) -> Image.Image | None:
     if not url:
         return None
@@ -198,33 +235,36 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
             return None
 
         data = resp.json()
-        for field in ("hdtvlogo", "clearlogo"):
+
+        def lang_rank(lang_val: str) -> int:
+            lang = lang_val.strip().lower()
+            if lang == "ja":
+                return 0
+            if lang == "en":
+                return 1
+            return 2
+
+        candidates: list[tuple[int, int, str, str]] = []
+        for field_idx, field in enumerate(("hdtvlogo", "clearlogo")):
             items = data.get(field)
             if not isinstance(items, list) or not items:
                 continue
-
-            def lang_priority(item: dict) -> int:
-                lang = str(item.get("lang") or "").strip().lower()
-                if lang == "it":
-                    return 0
-                if lang in ("en", ""):
-                    return 1
-                if lang == "ja":
-                    return 2
-                return 3
-
-            ordered_items = sorted(
-                [it for it in items if isinstance(it, dict)],
-                key=lang_priority,
-            )
-
-            for it in ordered_items:
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
                 logo_url = str(it.get("url") or "").strip()
-                logo_img = download_rgba_image(logo_url)
-                if logo_img is not None:
-                    lang_label = it.get("lang") or "n/d"
-                    print(f"[Fanart.tv] Logo ({field}, lang={lang_label}) trovato per '{query_title}' (ID {show_id})")
-                    return logo_img
+                if not logo_url:
+                    continue
+                lang_label = str(it.get("lang") or "").strip()
+                candidates.append((lang_rank(lang_label), field_idx, lang_label or "n/d", logo_url))
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+
+        for _, _, lang_label, logo_url in candidates:
+            logo_img = download_rgba_image(logo_url)
+            if logo_img is not None:
+                print(f"[Fanart.tv] Logo (lang={lang_label}) trovato per '{query_title}' (ID {show_id})")
+                return logo_img
 
         print(f"[Fanart.tv] Nessun logo valido in hdtvlogo/clearlogo per '{query_title}' (ID {show_id})")
     except Exception as exc:
@@ -253,21 +293,6 @@ def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
                 if not any(bad in full_src.lower() for bad in ("avatar", "icon", "sprite", "banner-ad")):
                     candidates.append(full_src)
 
-        for a_tag in soup.find_all("a", href=True):
-            href = str(a_tag["href"]).strip()
-            if "/vector-logo/" in href:
-                logo_page_url = urljoin("https://seeklogo.com", href)
-                page_resp = requests.get(logo_page_url, headers=HEADERS, timeout=20)
-                if page_resp.status_code == 200:
-                    page_soup = BeautifulSoup(page_resp.text, "html.parser")
-                    for p_img in page_soup.find_all("img"):
-                        p_src = str(p_img.get("src") or p_img.get("data-src") or "").strip()
-                        if p_src and ("images.seeklogo.com" in p_src.lower() or "seeklogo" in p_src.lower()):
-                            full_p_src = urljoin("https://seeklogo.com", p_src)
-                            if full_p_src not in candidates:
-                                candidates.insert(0, full_p_src)
-                break
-
         for cand_url in candidates[:4]:
             logo_img = download_rgba_image(cand_url)
             if logo_img is not None:
@@ -290,6 +315,8 @@ def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | Non
         return cached.copy() if cached is not None else None
 
     logo_img = fetch_from_fanart_tv(ep, query_title)
+    if logo_img is None:
+        logo_img = load_local_logo(query_title)
     if logo_img is None:
         logo_img = fetch_from_seeklogo(query_title)
 
@@ -486,20 +513,46 @@ def build_banner_image(
         return None
 
 
+def telegram_post_with_retry(
+    url: str,
+    *,
+    json_payload: dict | None = None,
+    data: dict | None = None,
+    files: dict | None = None,
+    max_retries: int = 3,
+) -> requests.Response | None:
+    for _ in range(max_retries):
+        resp = requests.post(url, json=json_payload, data=data, files=files, timeout=30)
+        if resp.status_code == 429:
+            retry_after = 5
+            try:
+                body = resp.json()
+                retry_after = int(body.get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                pass
+            wait_sec = max(1, retry_after) + 1
+            print(f"[Telegram 429] Attendo {wait_sec}s prima di riprovare...")
+            time.sleep(wait_sec)
+            continue
+        return resp
+    return None
+
+
 def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
-    resp = requests.post(
+    resp = telegram_post_with_retry(
         f"{api_base}/sendMessage",
-        json={
+        json_payload={
             "chat_id": CHAT_ID,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": False,
             "reply_markup": reply_markup,
         },
-        timeout=30,
     )
-    if not resp.ok or not resp.json().get("ok", False):
-        print(f"Errore sendMessage Telegram: {resp.status_code} {resp.text}")
+    if resp is None or not resp.ok or not resp.json().get("ok", False):
+        status = resp.status_code if resp is not None else "no-resp"
+        detail = resp.text if resp is not None else ""
+        print(f"Errore sendMessage Telegram: {status} {detail}")
         return False
     return True
 
@@ -513,71 +566,10 @@ def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> b
 
     banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
     if banner_bytes:
-        resp = requests.post(
+        resp = telegram_post_with_retry(
             f"{api_base}/sendPhoto",
             data={
                 "chat_id": CHAT_ID,
                 "caption": caption,
                 "parse_mode": "HTML",
-                "reply_markup": json.dumps(reply_markup),
-            },
-            files={"photo": ("banner.jpg", banner_bytes, "image/jpeg")},
-            timeout=30,
-        )
-        if resp.ok and resp.json().get("ok", False):
-            return True
-        print(f"Invio banner non riuscito, provo con URL: {resp.status_code} {resp.text}")
-
-    if photo_url:
-        resp = requests.post(
-            f"{api_base}/sendPhoto",
-            json={
-                "chat_id": CHAT_ID,
-                "photo": photo_url,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_markup": reply_markup,
-            },
-            timeout=30,
-        )
-        if resp.ok and resp.json().get("ok", False):
-            return True
-        print(f"sendPhoto con URL non riuscito, uso sendMessage: {resp.status_code} {resp.text}")
-
-    return send_text_message(api_base, caption, reply_markup)
-
-
-def main() -> None:
-    res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
-    res.raise_for_status()
-    payload = res.json()
-
-    if isinstance(payload, list):
-        episodes = payload
-    elif isinstance(payload, dict):
-        episodes = payload.get("episodes") or payload.get("items") or []
-    else:
-        episodes = []
-
-    ordered_episodes = order_episodes_chronologically(episodes)
-    seen = load_seen()
-    logo_cache: dict[str, Image.Image | None] = {}
-    new_sent = 0
-
-    for ep in ordered_episodes:
-        ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
-        if not ep_id or ep_id in seen:
-            continue
-        if send_telegram_item(ep, logo_cache):
-            seen.add(ep_id)
-            new_sent += 1
-
-    if new_sent > 0:
-        save_seen(seen)
-        print(f"Pubblicati {new_sent} nuovi episodi.")
-    else:
-        print("Nessun nuovo episodio da pubblicare.")
-
-
-if __name__ == "__main__":
-    main()
+                "reply_markup": json.dumps(reply
