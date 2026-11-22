@@ -4,7 +4,7 @@ from io import BytesIO
 import json
 import os
 import re
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -169,6 +169,19 @@ def wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Ima
     return lines
 
 
+def build_gradient_overlay(width: int, height: int) -> Image.Image:
+    """Crea una sfumatura orizzontale scura verso destra per migliorare il contrasto."""
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for x in range(width):
+        ratio = x / float(max(1, width - 1))
+        # Da ~15% di oscuramento a sinistra fino a ~72% a destra
+        alpha = int(38 + (184 - 38) * (ratio ** 1.35))
+        alpha = max(0, min(255, alpha))
+        draw.line([(x, 0), (x, height)], fill=(10, 10, 14, alpha))
+    return overlay
+
+
 def build_banner_image(photo_url: str, title: str) -> bytes | None:
     if not photo_url:
         return None
@@ -178,25 +191,34 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
         src_img = Image.open(BytesIO(resp.content)).convert("RGB")
 
         width, height = 1200, 600
-        bg_r, bg_g, bg_b = 12, 12, 14
-        canvas = Image.new("RGB", (width, height), (bg_r, bg_g, bg_b))
+
+        # 1. Sfondo sfumato (ambilight) ricavato dalla copertina
+        ambilight = ImageOps.fit(src_img, (width, height), method=Image.Resampling.LANCZOS)
+        ambilight = ambilight.filter(ImageFilter.GaussianBlur(radius=55)).convert("RGBA")
+
+        # 2. Gradiente scuro progressivo verso destra
+        gradient = build_gradient_overlay(width, height)
+        canvas_rgba = Image.alpha_composite(ambilight, gradient)
+
+        # 3. Copertina nitida a sinistra con sfumatura sul bordo destro
+        left_w = 450
+        cover = ImageOps.fit(src_img, (left_w, height), method=Image.Resampling.LANCZOS).convert("RGBA")
+        alpha_mask = Image.new("L", (left_w, height), 255)
+        mask_draw = ImageDraw.Draw(alpha_mask)
+
+        fade_start = max(0, left_w - 55)
+        for x in range(fade_start, left_w):
+            t = (x - fade_start) / float(max(1, left_w - fade_start))
+            a_val = int(255 * (1.0 - t))
+            mask_draw.line([(x, 0), (x, height)], fill=max(0, min(255, a_val)))
+
+        cover.putalpha(alpha_mask)
+        canvas_rgba.alpha_composite(cover, dest=(0, 0))
+
+        canvas = canvas_rgba.convert("RGB")
         draw = ImageDraw.Draw(canvas)
 
-        left_w = 450
-        cover = ImageOps.fit(src_img, (left_w, height), method=Image.Resampling.LANCZOS)
-        canvas.paste(cover, (0, 0))
-
-        blend_w = 40
-        start_x = max(0, left_w - blend_w)
-        for x in range(start_x, left_w):
-            alpha = max(0.0, min(1.0, (x - start_x) / float(max(1, left_w - start_x))))
-            for y in range(height):
-                cr, cg, cb = cover.getpixel((x, y))
-                nr = int(cr * (1.0 - alpha) + bg_r * alpha)
-                ng = int(cg * (1.0 - alpha) + bg_g * alpha)
-                nb = int(cb * (1.0 - alpha) + bg_b * alpha)
-                canvas.putpixel((x, y), (nr, ng, nb))
-
+        # 4. Titolo dell'anime centrato a destra con leggera ombra
         right_x0 = left_w + 48
         right_width = width - right_x0 - 48
         font_size = 46
@@ -222,6 +244,8 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
             bbox = draw.textbbox((0, 0), line, font=font)
             lw = bbox[2] - bbox[0]
             x = right_x0 + (right_width - lw) // 2
+            # Leggera ombra per staccare il testo sulla sfumatura
+            draw.text((x + 2, y + 3), line, font=font, fill=(0, 0, 0))
             draw.text((x, y), line, font=font, fill=(255, 255, 255))
             y += lh + gap
 
