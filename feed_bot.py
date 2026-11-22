@@ -4,7 +4,7 @@ from io import BytesIO
 import json
 import os
 import re
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -170,16 +170,30 @@ def wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Ima
 
 
 def build_gradient_overlay(width: int, height: int) -> Image.Image:
-    """Crea una sfumatura orizzontale scura verso destra per migliorare il contrasto."""
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     for x in range(width):
         ratio = x / float(max(1, width - 1))
-        # Da ~15% di oscuramento a sinistra fino a ~72% a destra
         alpha = int(38 + (184 - 38) * (ratio ** 1.35))
         alpha = max(0, min(255, alpha))
         draw.line([(x, 0), (x, height)], fill=(10, 10, 14, alpha))
     return overlay
+
+
+def apply_black_if_too_dark(ambilight_rgba: Image.Image, left_w: int, threshold: float = 48.0) -> Image.Image:
+    """Se l'area destra sfocata è troppo scura, passa a uno sfondo nero pulito."""
+    width, height = ambilight_rgba.size
+    right_crop = ambilight_rgba.crop((left_w, 0, width, height)).convert("L")
+    avg_luma = ImageStat.Stat(right_crop).mean[0]
+
+    if avg_luma >= threshold:
+        return ambilight_rgba
+
+    # Sotto la soglia, sfuma verso il nero pieno (0, 0, 0)
+    darkness_factor = max(0.0, min(1.0, (threshold - avg_luma) / max(1.0, threshold - 15.0)))
+    black_layer = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+    blended = Image.blend(ambilight_rgba, black_layer, alpha=darkness_factor)
+    return blended
 
 
 def build_banner_image(photo_url: str, title: str) -> bytes | None:
@@ -191,17 +205,17 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
         src_img = Image.open(BytesIO(resp.content)).convert("RGB")
 
         width, height = 1200, 600
+        left_w = 450
 
-        # 1. Sfondo sfumato (ambilight) ricavato dalla copertina
         ambilight = ImageOps.fit(src_img, (width, height), method=Image.Resampling.LANCZOS)
         ambilight = ambilight.filter(ImageFilter.GaussianBlur(radius=55)).convert("RGBA")
 
-        # 2. Gradiente scuro progressivo verso destra
+        # Se la sfumatura a destra è troppo scura, passa al nero
+        ambilight = apply_black_if_too_dark(ambilight, left_w=left_w, threshold=48.0)
+
         gradient = build_gradient_overlay(width, height)
         canvas_rgba = Image.alpha_composite(ambilight, gradient)
 
-        # 3. Copertina nitida a sinistra con sfumatura sul bordo destro
-        left_w = 450
         cover = ImageOps.fit(src_img, (left_w, height), method=Image.Resampling.LANCZOS).convert("RGBA")
         alpha_mask = Image.new("L", (left_w, height), 255)
         mask_draw = ImageDraw.Draw(alpha_mask)
@@ -218,7 +232,6 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
         canvas = canvas_rgba.convert("RGB")
         draw = ImageDraw.Draw(canvas)
 
-        # 4. Titolo dell'anime centrato a destra con leggera ombra
         right_x0 = left_w + 48
         right_width = width - right_x0 - 48
         font_size = 46
@@ -244,7 +257,6 @@ def build_banner_image(photo_url: str, title: str) -> bytes | None:
             bbox = draw.textbbox((0, 0), line, font=font)
             lw = bbox[2] - bbox[0]
             x = right_x0 + (right_width - lw) // 2
-            # Leggera ombra per staccare il testo sulla sfumatura
             draw.text((x + 2, y + 3), line, font=font, fill=(0, 0, 0))
             draw.text((x, y), line, font=font, fill=(255, 255, 255))
             y += lh + gap
