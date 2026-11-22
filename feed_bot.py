@@ -139,44 +139,96 @@ def download_rgba_image(url: str) -> Image.Image | None:
             return None
         return img
     except Exception as exc:
-        print(f"Errore download immagine logo ({url}):", exc)
+        print(f"Errore download immagine logo ({url}): {exc}")
         return None
+
+
+def extract_fanart_show_id(ep: dict) -> str:
+    candidate_keys = (
+        "tvdb_id",
+        "tvdbId",
+        "thetvdb_id",
+        "tvdb",
+        "tmdb_id",
+        "tmdbId",
+        "tmdb",
+        "show_id",
+        "showId",
+        "series_id",
+        "seriesId",
+    )
+    containers: list[dict] = [ep]
+    for sub_key in ("show", "series", "anime", "ids", "meta", "metadata"):
+        sub_val = ep.get(sub_key)
+        if isinstance(sub_val, dict):
+            containers.append(sub_val)
+
+    for box in containers:
+        for key in candidate_keys:
+            val = box.get(key)
+            if val is None:
+                continue
+            s = str(val).strip()
+            digits = re.sub(r"\D+", "", s)
+            if digits and (s.isdigit() or key.lower().startswith(("tvdb", "tmdb", "show", "series"))):
+                return digits
+    return ""
 
 
 def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     if not FANART_API_KEY:
+        print(f"[Fanart.tv] FANART_API_KEY assente per '{query_title}'")
         return None
 
-    show_id = ""
-    for key in ("tvdb_id", "tvdbId", "tmdb_id", "tmdbId", "show_id", "showId"):
-        val = ep.get(key)
-        if val is not None and str(val).strip().isdigit():
-            show_id = str(val).strip()
-            break
-
+    show_id = extract_fanart_show_id(ep)
     if not show_id:
+        print(f"[Fanart.tv] Nessun ID serie trovato nel feed per '{query_title}' (chiavi: {list(ep.keys())})")
         return None
 
     try:
         url = f"https://webservice.fanart.tv/v3/tv/{show_id}"
-        resp = requests.get(url, params={"api_key": FANART_API_KEY}, headers=HEADERS, timeout=20)
+        resp = requests.get(
+            url,
+            params={"api_key": FANART_API_KEY},
+            headers=HEADERS,
+            timeout=20,
+        )
         if resp.status_code != 200:
+            print(f"[Fanart.tv] HTTP {resp.status_code} per '{query_title}' (ID {show_id})")
             return None
+
         data = resp.json()
         for field in ("hdtvlogo", "clearlogo"):
             items = data.get(field)
-            if isinstance(items, list) and items:
-                preferred = next(
-                    (it for it in items if str(it.get("lang", "")).lower() in ("it", "en", "ja")),
-                    items[0],
-                )
-                logo_url = str(preferred.get("url") or "").strip()
+            if not isinstance(items, list) or not items:
+                continue
+
+            def lang_priority(item: dict) -> int:
+                lang = str(item.get("lang") or "").strip().lower()
+                if lang == "it":
+                    return 0
+                if lang in ("en", ""):
+                    return 1
+                if lang == "ja":
+                    return 2
+                return 3
+
+            ordered_items = sorted(
+                [it for it in items if isinstance(it, dict)],
+                key=lang_priority,
+            )
+
+            for it in ordered_items:
+                logo_url = str(it.get("url") or "").strip()
                 logo_img = download_rgba_image(logo_url)
                 if logo_img is not None:
-                    print(f"Logo trovato su Fanart.tv per '{query_title}'")
+                    lang_label = it.get("lang") or "n/d"
+                    print(f"[Fanart.tv] Logo ({field}, lang={lang_label}) trovato per '{query_title}' (ID {show_id})")
                     return logo_img
+
+        print(f"[Fanart.tv] Nessun logo valido in hdtvlogo/clearlogo per '{query_title}' (ID {show_id})")
     except Exception as exc:
-        print(f"Errore Fanart.tv per '{query_title}':", exc)
+        print(f"[Fanart.tv] Errore per '{query_title}' (ID {show_id}): {exc}")
 
     return None
 
@@ -186,6 +238,7 @@ def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
         search_url = f"https://seeklogo.com/search?q={quote_plus(query_title)}"
         resp = requests.get(search_url, headers=HEADERS, timeout=20)
         if resp.status_code != 200:
+            print(f"[Seeklogo] HTTP {resp.status_code} per '{query_title}'")
             return None
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -218,10 +271,12 @@ def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
         for cand_url in candidates[:4]:
             logo_img = download_rgba_image(cand_url)
             if logo_img is not None:
-                print(f"Logo trovato su Seeklogo per '{query_title}'")
+                print(f"[Seeklogo] Logo trovato per '{query_title}'")
                 return logo_img
+
+        print(f"[Seeklogo] Nessun logo scaricabile per '{query_title}'")
     except Exception as exc:
-        print(f"Errore Seeklogo per '{query_title}':", exc)
+        print(f"[Seeklogo] Errore per '{query_title}': {exc}")
 
     return None
 
@@ -427,7 +482,7 @@ def build_banner_image(
         canvas.save(out, format="JPEG", quality=90, optimize=True)
         return out.getvalue()
     except Exception as exc:
-        print("Errore generazione banner:", exc)
+        print(f"Errore generazione banner: {exc}")
         return None
 
 
@@ -444,7 +499,7 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
         timeout=30,
     )
     if not resp.ok or not resp.json().get("ok", False):
-        print("Errore sendMessage Telegram:", resp.status_code, resp.text)
+        print(f"Errore sendMessage Telegram: {resp.status_code} {resp.text}")
         return False
     return True
 
@@ -471,7 +526,7 @@ def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> b
         )
         if resp.ok and resp.json().get("ok", False):
             return True
-        print("Invio banner non riuscito, provo con URL:", resp.status_code, resp.text)
+        print(f"Invio banner non riuscito, provo con URL: {resp.status_code} {resp.text}")
 
     if photo_url:
         resp = requests.post(
@@ -487,7 +542,7 @@ def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> b
         )
         if resp.ok and resp.json().get("ok", False):
             return True
-        print("sendPhoto con URL non riuscito, uso sendMessage:", resp.status_code, resp.text)
+        print(f"sendPhoto con URL non riuscito, uso sendMessage: {resp.status_code} {resp.text}")
 
     return send_text_message(api_base, caption, reply_markup)
 
