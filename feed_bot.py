@@ -5,8 +5,6 @@ import json
 import os
 import re
 import time
-from urllib.parse import quote_plus, urljoin
-from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 import requests
 
@@ -25,6 +23,10 @@ HEADERS = {
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     )
+}
+
+COMMONS_HEADERS = {
+    "User-Agent": f"AnimeOriTelegramBot/1.0 ({SITE_BASE_URL})"
 }
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
@@ -165,11 +167,12 @@ def load_local_logo(query_title: str) -> Image.Image | None:
     return None
 
 
-def download_rgba_image(url: str) -> Image.Image | None:
+def download_rgba_image(url: str, custom_headers: dict | None = None) -> Image.Image | None:
     if not url:
         return None
+    req_headers = custom_headers if custom_headers is not None else HEADERS
     try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
+        r = requests.get(url, headers=req_headers, timeout=20)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGBA")
         if img.width < 20 or img.height < 10:
@@ -273,35 +276,60 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
+def fetch_from_wikimedia_commons(query_title: str) -> Image.Image | None:
+    clean_query = re.sub(r"\(\s*\d{4}\s*\)", "", query_title).strip() or query_title
+    queries = [f'incategory:"Logos of anime" {clean_query}']
+    if clean_query != query_title:
+        queries.append(f'incategory:"Logos of anime" {query_title}')
+
     try:
-        search_url = f"https://seeklogo.com/search?q={quote_plus(query_title)}"
-        resp = requests.get(search_url, headers=HEADERS, timeout=20)
-        if resp.status_code != 200:
-            print(f"[Seeklogo] HTTP {resp.status_code} per '{query_title}'")
-            return None
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        candidates: list[str] = []
-
-        for img_tag in soup.find_all("img"):
-            src = str(img_tag.get("src") or img_tag.get("data-src") or "").strip()
-            if not src:
+        for search_query in queries:
+            params = {
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": search_query,
+                "gsrnamespace": "6",
+                "gsrlimit": "6",
+                "prop": "imageinfo",
+                "iiprop": "url|mime",
+            }
+            resp = requests.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params=params,
+                headers=COMMONS_HEADERS,
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                print(f"[Wikimedia] HTTP {resp.status_code} per '{query_title}'")
                 continue
-            full_src = urljoin("https://seeklogo.com", src)
-            if "seeklogo" in full_src.lower() or "images.seeklogo.com" in full_src.lower():
-                if not any(bad in full_src.lower() for bad in ("avatar", "icon", "sprite", "banner-ad")):
-                    candidates.append(full_src)
 
-        for cand_url in candidates[:4]:
-            logo_img = download_rgba_image(cand_url)
-            if logo_img is not None:
-                print(f"[Seeklogo] Logo trovato per '{query_title}'")
-                return logo_img
+            pages = (resp.json().get("query") or {}).get("pages") or {}
+            ranked_pages: list[tuple[int, str, str]] = []
+            for page in pages.values():
+                if not isinstance(page, dict):
+                    continue
+                infos = page.get("imageinfo") or []
+                if not infos or not isinstance(infos[0], dict):
+                    continue
+                mime = str(infos[0].get("mime") or "").lower()
+                img_url = str(infos[0].get("url") or "").strip()
+                if not img_url or mime == "image/svg+xml":
+                    continue
+                prio = 0 if mime == "image/png" else 1
+                ranked_pages.append((prio, mime, img_url))
 
-        print(f"[Seeklogo] Nessun logo scaricabile per '{query_title}'")
+            ranked_pages.sort(key=lambda item: item[0])
+
+            for _, mime, img_url in ranked_pages:
+                logo_img = download_rgba_image(img_url, custom_headers=COMMONS_HEADERS)
+                if logo_img is not None:
+                    print(f"[Wikimedia] Logo ({mime}) trovato per '{query_title}'")
+                    return logo_img
+
+        print(f"[Wikimedia] Nessun logo raster valido trovato per '{query_title}'")
     except Exception as exc:
-        print(f"[Seeklogo] Errore per '{query_title}': {exc}")
+        print(f"[Wikimedia] Errore per '{query_title}': {exc}")
 
     return None
 
@@ -318,7 +346,7 @@ def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | Non
     if logo_img is None:
         logo_img = load_local_logo(query_title)
     if logo_img is None:
-        logo_img = fetch_from_seeklogo(query_title)
+        logo_img = fetch_from_wikimedia_commons(query_title)
 
     logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
     return logo_img
@@ -543,97 +571,4 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
         f"{api_base}/sendMessage",
         json_payload={
             "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-            "reply_markup": reply_markup,
-        },
-    )
-    if resp is None or not resp.ok or not resp.json().get("ok", False):
-        status = resp.status_code if resp is not None else "no-resp"
-        detail = resp.text if resp is not None else ""
-        print(f"Errore sendMessage Telegram: {status} {detail}")
-        return False
-    return True
-
-
-def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> bool:
-    raw_title = str(ep.get("title") or "Nuovo episodio").strip()
-    caption = format_caption(ep)
-    reply_markup = build_reply_markup(ep)
-    photo_url = build_image_url(ep)
-    api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
-    if banner_bytes:
-        resp = telegram_post_with_retry(
-            f"{api_base}/sendPhoto",
-            data={
-                "chat_id": CHAT_ID,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_markup": json.dumps(reply_markup),
-            },
-            files={"photo": ("banner.jpg", banner_bytes, "image/jpeg")},
-        )
-        if resp is not None and resp.ok and resp.json().get("ok", False):
-            return True
-        status = resp.status_code if resp is not None else "no-resp"
-        detail = resp.text if resp is not None else ""
-        print(f"Invio banner non riuscito, provo con URL: {status} {detail}")
-
-    if photo_url:
-        resp = telegram_post_with_retry(
-            f"{api_base}/sendPhoto",
-            json_payload={
-                "chat_id": CHAT_ID,
-                "photo": photo_url,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_markup": reply_markup,
-            },
-        )
-        if resp is not None and resp.ok and resp.json().get("ok", False):
-            return True
-        status = resp.status_code if resp is not None else "no-resp"
-        detail = resp.text if resp is not None else ""
-        print(f"sendPhoto con URL non riuscito, uso sendMessage: {status} {detail}")
-
-    return send_text_message(api_base, caption, reply_markup)
-
-
-def main() -> None:
-    res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
-    res.raise_for_status()
-    payload = res.json()
-
-    if isinstance(payload, list):
-        episodes = payload
-    elif isinstance(payload, dict):
-        episodes = payload.get("episodes") or payload.get("items") or []
-    else:
-        episodes = []
-
-    ordered_episodes = order_episodes_chronologically(episodes)
-    seen = load_seen()
-    logo_cache: dict[str, Image.Image | None] = {}
-    new_sent = 0
-
-    for ep in ordered_episodes:
-        ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
-        if not ep_id or ep_id in seen:
-            continue
-        if send_telegram_item(ep, logo_cache):
-            seen.add(ep_id)
-            new_sent += 1
-            time.sleep(1.5)
-
-    if new_sent > 0:
-        save_seen(seen)
-        print(f"Pubblicati {new_sent} nuovi episodi.")
-    else:
-        print("Nessun nuovo episodio da pubblicare.")
-
-
-if __name__ == "__main__":
-    main()
+            "text": te
