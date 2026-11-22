@@ -1,3 +1,4 @@
+from datetime import datetime
 import html
 import json
 import os
@@ -9,6 +10,8 @@ FEED_URL = os.environ["EPISODES_FEED_URL"]
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://animeori.edgeone.dev").rstrip("/")
 MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").rstrip("/")
 STATE_FILE = "seen_episodes.json"
+
+DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
 
 
 def load_seen() -> set[str]:
@@ -22,6 +25,49 @@ def load_seen() -> set[str]:
 def save_seen(seen: set[str]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, indent=2, ensure_ascii=False)
+
+
+def parse_timestamp(ep: dict) -> float | None:
+    for key in DATE_KEYS:
+        val = ep.get(key)
+        if val is None or val == "":
+            continue
+        if isinstance(val, (int, float)):
+            ts = float(val)
+            # Se sembra in millisecondi
+            return ts / 1000.0 if ts > 1e12 else ts
+        if isinstance(val, str):
+            s = val.strip()
+            try:
+                num = float(s)
+                return num / 1000.0 if num > 1e12 else num
+            except ValueError:
+                pass
+            # Prova formato ISO 8601 (es. "2026-11-22T14:30:00Z")
+            try:
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                return datetime.fromisoformat(s).timestamp()
+            except ValueError:
+                continue
+    return None
+
+
+def order_episodes_chronologically(episodes: list) -> list[dict]:
+    valid = [ep for ep in episodes if isinstance(ep, dict)]
+    timestamps = [parse_timestamp(ep) for ep in valid]
+
+    # Se almeno un episodio ha una data/ora valida, ordina per timestamp crescente (più vecchio -> più nuovo)
+    if any(ts is not None for ts in timestamps):
+        indexed_with_ts = [
+            (ts if ts is not None else float("inf"), idx, ep)
+            for idx, (ts, ep) in enumerate(zip(timestamps, valid))
+        ]
+        indexed_with_ts.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in indexed_with_ts]
+
+    # Altrimenti assume il feed ordinato dal più recente al più vecchio e lo inverte
+    return list(reversed(valid))
 
 
 def normalize_hash(raw_hash: str) -> str:
@@ -114,12 +160,11 @@ def main() -> None:
     else:
         episodes = []
 
+    ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
     new_sent = 0
 
-    for ep in reversed(episodes):
-        if not isinstance(ep, dict):
-            continue
+    for ep in ordered_episodes:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
@@ -129,7 +174,7 @@ def main() -> None:
 
     if new_sent > 0:
         save_seen(seen)
-        print(f"Pubblicati {new_sent} nuovi episodi.")
+        print(f"Pubblicati {new_sent} nuovi episodi in ordine cronologico.")
     else:
         print("Nessun nuovo episodio da pubblicare.")
 
