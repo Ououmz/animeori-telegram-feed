@@ -2,6 +2,7 @@ from datetime import datetime
 import html
 import json
 import os
+import re
 import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -9,6 +10,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 FEED_URL = os.environ["EPISODES_FEED_URL"]
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://animeori.edgeone.dev").rstrip("/")
 MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").rstrip("/")
+GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 STATE_FILE = "seen_episodes.json"
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
@@ -34,7 +36,6 @@ def parse_timestamp(ep: dict) -> float | None:
             continue
         if isinstance(val, (int, float)):
             ts = float(val)
-            # Se sembra in millisecondi
             return ts / 1000.0 if ts > 1e12 else ts
         if isinstance(val, str):
             s = val.strip()
@@ -43,7 +44,6 @@ def parse_timestamp(ep: dict) -> float | None:
                 return num / 1000.0 if num > 1e12 else num
             except ValueError:
                 pass
-            # Prova formato ISO 8601 (es. "2026-11-22T14:30:00Z")
             try:
                 if s.endswith("Z"):
                     s = s[:-1] + "+00:00"
@@ -57,7 +57,6 @@ def order_episodes_chronologically(episodes: list) -> list[dict]:
     valid = [ep for ep in episodes if isinstance(ep, dict)]
     timestamps = [parse_timestamp(ep) for ep in valid]
 
-    # Se almeno un episodio ha una data/ora valida, ordina per timestamp crescente (più vecchio -> più nuovo)
     if any(ts is not None for ts in timestamps):
         indexed_with_ts = [
             (ts if ts is not None else float("inf"), idx, ep)
@@ -66,7 +65,6 @@ def order_episodes_chronologically(episodes: list) -> list[dict]:
         indexed_with_ts.sort(key=lambda item: (item[0], item[1]))
         return [item[2] for item in indexed_with_ts]
 
-    # Altrimenti assume il feed ordinato dal più recente al più vecchio e lo inverte
     return list(reversed(valid))
 
 
@@ -99,14 +97,51 @@ def build_image_url(ep: dict) -> str:
     return f"{MEDIA_BASE_URL}/{img}"
 
 
-def send_text_message(api_base: str, text: str) -> bool:
+def is_dubbed_ita(ep: dict) -> bool:
+    title = str(ep.get("title") or "")
+    ep_label = str(ep.get("episode") or "")
+    combined = f"{title} {ep_label}"
+    return bool(re.search(r"[\(\[]\s*ITA\s*[\)\]]|\bITA\b", combined, flags=re.IGNORECASE)) and not bool(
+        re.search(r"\bSUB\s*ITA\b", combined, flags=re.IGNORECASE)
+    )
+
+
+def build_reply_markup(ep: dict, episode_url: str) -> dict:
+    ep_raw = str(ep.get("episode") or "").strip()
+    ep_btn_label = f"Ep. {ep_raw} Streaming & Download" if ep_raw else "Streaming & Download"
+
+    keyboard = [
+        [{"text": ep_btn_label, "url": episode_url}]
+    ]
+
+    if GROUP_URL.startswith(("http://", "https://")):
+        keyboard.append([{"text": "👥 GRUPPO", "url": GROUP_URL}])
+
+    return {"inline_keyboard": keyboard}
+
+
+def format_caption(ep: dict) -> str:
+    raw_title = str(ep.get("title") or "Nuovo episodio").strip()
+    ep_raw = str(ep.get("episode") or "").strip()
+    lang_tag = "ITA HD" if is_dubbed_ita(ep) else "SUB ITA HD"
+
+    title = html.escape(raw_title)
+
+    if ep_raw:
+        ep_escaped = html.escape(ep_raw)
+        return f"✅ Disponibile 「<b>{title}</b>」 - Episodio {ep_escaped} {lang_tag}"
+    return f"✅ Disponibile 「<b>{title}</b>」 - {lang_tag}"
+
+
+def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     resp = requests.post(
         f"{api_base}/sendMessage",
         json={
             "chat_id": CHAT_ID,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": False,
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True,
         },
         timeout=30,
     )
@@ -117,17 +152,10 @@ def send_text_message(api_base: str, text: str) -> bool:
 
 
 def send_telegram_item(ep: dict) -> bool:
-    title = html.escape(str(ep.get("title") or "Nuovo episodio"))
-    episode_label = html.escape(str(ep.get("episode") or ""))
-    url = html.escape(build_episode_url(ep))
+    episode_url = build_episode_url(ep)
     photo_url = build_image_url(ep)
-
-    header = f"<b>{title}</b>" + (f" — Ep. {episode_label}" if episode_label else "")
-    text = (
-        f"🆕 <b>Nuovo episodio disponibile!</b>\n"
-        f"{header}\n\n"
-        f"▶️ Guardalo su AnimeOri:\n{url}"
-    )
+    caption = format_caption(ep)
+    reply_markup = build_reply_markup(ep, episode_url)
 
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
     if photo_url:
@@ -136,8 +164,9 @@ def send_telegram_item(ep: dict) -> bool:
             json={
                 "chat_id": CHAT_ID,
                 "photo": photo_url,
-                "caption": text,
+                "caption": caption,
                 "parse_mode": "HTML",
+                "reply_markup": reply_markup,
             },
             timeout=30,
         )
@@ -145,7 +174,7 @@ def send_telegram_item(ep: dict) -> bool:
             return True
         print("sendPhoto non riuscito, uso sendMessage:", resp.status_code, resp.text)
 
-    return send_text_message(api_base, text)
+    return send_text_message(api_base, caption, reply_markup)
 
 
 def main() -> None:
