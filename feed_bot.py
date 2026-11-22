@@ -48,14 +48,14 @@ def load_custom_logos() -> dict[str, str]:
         with open(CUSTOM_LOGOS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return {str(k): str(v or "").strip() for k, v in data.items()}
+            return {str(k).strip().lower(): str(v or "").strip() for k, v in data.items() if str(k).strip()}
     except Exception as exc:
         print(f"[CustomLogos] Errore lettura {CUSTOM_LOGOS_FILE}: {exc}")
     return {}
 
 
 def save_custom_logos(custom_logos: dict[str, str]) -> None:
-    ordered = {k: custom_logos[k] for k in sorted(custom_logos.keys(), key=lambda s: s.lower())}
+    ordered = {k: custom_logos[k] for k in sorted(custom_logos.keys())}
     with open(CUSTOM_LOGOS_FILE, "w", encoding="utf-8") as f:
         json.dump(ordered, f, indent=2, ensure_ascii=False)
 
@@ -145,6 +145,11 @@ def clean_title_for_logo(title: str) -> str:
     cleaned = re.sub(r"\bHD\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—|")
     return cleaned or title.strip()
+
+
+def normalize_logo_key(query_title: str) -> str:
+    key = re.sub(r"\s+", " ", query_title.strip().lower())
+    return key
 
 
 def download_rgba_image(url: str) -> Image.Image | None:
@@ -255,34 +260,6 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def fetch_from_custom_logos(
-    query_title: str,
-    custom_logos: dict[str, str],
-) -> tuple[Image.Image | None, bool]:
-    matched_key = None
-    for k in custom_logos:
-        if k.strip().lower() == query_title.lower():
-            matched_key = k
-            break
-
-    if matched_key is None:
-        custom_logos[query_title] = ""
-        print(f"[CustomLogos] Aggiunto '{query_title}' in {CUSTOM_LOGOS_FILE} (in attesa di URL)")
-        return None, True
-
-    custom_url = custom_logos[matched_key].strip()
-    if not custom_url:
-        return None, False
-
-    img = download_rgba_image(custom_url)
-    if img is not None:
-        print(f"[CustomLogos] Logo caricato da URL per '{query_title}'")
-        return img, False
-
-    print(f"[CustomLogos] URL non valido/non scaricabile per '{query_title}': {custom_url}")
-    return None, False
-
-
 def get_anime_logo(
     ep: dict,
     title: str,
@@ -290,19 +267,34 @@ def get_anime_logo(
     custom_logos: dict[str, str],
 ) -> tuple[Image.Image | None, bool]:
     query_title = clean_title_for_logo(title)
-    cache_key = query_title.lower()
+    cache_key = normalize_logo_key(query_title)
 
     if cache_key in logo_cache:
         cached = logo_cache[cache_key]
         return (cached.copy() if cached is not None else None), False
 
     logo_img = fetch_from_fanart_tv(ep, query_title)
-    custom_updated = False
-    if logo_img is None:
-        logo_img, custom_updated = fetch_from_custom_logos(query_title, custom_logos)
+    if logo_img is not None:
+        logo_cache[cache_key] = logo_img.copy()
+        return logo_img, False
 
-    logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
-    return logo_img, custom_updated
+    custom_logos_dirty = False
+    if cache_key not in custom_logos:
+        custom_logos[cache_key] = ""
+        custom_logos_dirty = True
+        print(f"[CustomLogos] Aggiunta voce vuota per '{query_title}' (chiave: '{cache_key}')")
+
+    custom_url = custom_logos.get(cache_key, "").strip()
+    if custom_url:
+        custom_img = download_rgba_image(custom_url)
+        if custom_img is not None:
+            print(f"[CustomLogos] Logo caricato da link per '{query_title}'")
+            logo_cache[cache_key] = custom_img.copy()
+            return custom_img, custom_logos_dirty
+        print(f"[CustomLogos] Link non valido/non scaricabile per '{query_title}': {custom_url}")
+
+    logo_cache[cache_key] = None
+    return None, custom_logos_dirty
 
 
 def format_caption(ep: dict) -> str:
@@ -452,7 +444,7 @@ def build_banner_image(
     title: str,
     logo_cache: dict[str, Image.Image | None],
     custom_logos: dict[str, str],
-    custom_dirty_flag: list[bool],
+    custom_logos_state: dict[str, bool],
 ) -> bytes | None:
     if not photo_url:
         return None
@@ -484,9 +476,10 @@ def build_banner_image(
         cover.putalpha(alpha_mask)
         canvas_rgba.alpha_composite(cover, dest=(0, 0))
 
-        logo_img, updated = get_anime_logo(ep, title, logo_cache, custom_logos)
-        if updated:
-            custom_dirty_flag[0] = True
+        logo_img, dirty = get_anime_logo(ep, title, logo_cache, custom_logos)
+        if dirty:
+            custom_logos_state["dirty"] = True
+
         canvas_rgba = draw_logo_or_title(canvas_rgba, title, left_w=left_w, logo_img=logo_img)
 
         canvas = canvas_rgba.convert("RGB")
@@ -546,7 +539,7 @@ def send_telegram_item(
     ep: dict,
     logo_cache: dict[str, Image.Image | None],
     custom_logos: dict[str, str],
-    custom_dirty_flag: list[bool],
+    custom_logos_state: dict[str, bool],
 ) -> bool:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
@@ -560,7 +553,7 @@ def send_telegram_item(
         raw_title,
         logo_cache,
         custom_logos,
-        custom_dirty_flag,
+        custom_logos_state,
     )
     if banner_bytes:
         resp = telegram_post_with_retry(
@@ -614,7 +607,7 @@ def main() -> None:
     ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
     custom_logos = load_custom_logos()
-    custom_dirty_flag = [False]
+    custom_logos_state = {"dirty": False}
     logo_cache: dict[str, Image.Image | None] = {}
     new_sent = 0
 
@@ -622,13 +615,14 @@ def main() -> None:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
-        if send_telegram_item(ep, logo_cache, custom_logos, custom_dirty_flag):
+        if send_telegram_item(ep, logo_cache, custom_logos, custom_logos_state):
             seen.add(ep_id)
             new_sent += 1
             time.sleep(1.5)
 
-    if custom_dirty_flag[0]:
+    if custom_logos_state["dirty"]:
         save_custom_logos(custom_logos)
+        print(f"Aggiornato {CUSTOM_LOGOS_FILE} con nuovi titoli senza logo Fanart.tv.")
 
     if new_sent > 0:
         save_seen(seen)
