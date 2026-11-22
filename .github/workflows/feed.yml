@@ -11,11 +11,12 @@ permissions:
 jobs:
   run-feed-bot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -23,28 +24,27 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pillow
+          pip install pillow requests
 
       - name: Run Telegram feed script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EPISODES_FEED_URL: ${{ secrets.EPISODES_FEED_URL }}
-          SITE_BASE_URL: ${{ vars.SITE_BASE_URL }}
-          MEDIA_BASE_URL: ${{ vars.MEDIA_BASE_URL }}
-          TELEGRAM_GROUP_URL: ${{ vars.TELEGRAM_GROUP_URL }}
+          SITE_BASE_URL: ${{ vars.SITE_BASE_URL || 'https://animeori.edgeone.dev' }}
+          MEDIA_BASE_URL: ${{ vars.MEDIA_BASE_URL || 'https://animeori.ai.studio' }}
+          TELEGRAM_GROUP_URL: ${{ secrets.TELEGRAM_GROUP_URL }}
           FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
         run: python feed_bot.py
 
-      - name: Commit updated state and manual logos
+      - name: Commit updated seen_episodes.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen_episodes.json manual_logos.json
+          git add seen_episodes.json
           if ! git diff --staged --quiet; then
-            git pull --rebase --autostash origin ${{ github.ref_name }} || true
-            git commit -m "chore: update seen episodes and manual logos"
+            git commit -m "Update seen_episodes.json"
             git push
           else
-            echo "Nessuna modifica da committare."
+            echo "Nessuna modifica a seen_episodes.json"
           fi
