@@ -5,8 +5,6 @@ import json
 import os
 import re
 import time
-from urllib.parse import quote_plus, urljoin
-from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 import requests
 
@@ -18,17 +16,12 @@ MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
-LOGOS_DIR = "logos"
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     )
-}
-
-WIKI_HEADERS = {
-    "User-Agent": "AnimeOriBot/1.0 (https://animeori.edgeone.dev; contact@animeori.edgeone.dev)"
 }
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
@@ -134,46 +127,11 @@ def clean_title_for_logo(title: str) -> str:
     return cleaned or title.strip()
 
 
-def slugify_logo_name(text: str) -> str:
-    s = text.lower().replace("½", "1-2")
-    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    return s
-
-
-def load_local_logo(query_title: str) -> Image.Image | None:
-    if not os.path.isdir(LOGOS_DIR):
-        return None
-
-    slug = slugify_logo_name(query_title)
-    no_year_slug = slugify_logo_name(re.sub(r"\(\s*\d{4}\s*\)", "", query_title))
-    candidates = [
-        os.path.join(LOGOS_DIR, f"{slug}.png"),
-        os.path.join(LOGOS_DIR, f"{slug.replace('-', '_')}.png"),
-    ]
-    if no_year_slug and no_year_slug != slug:
-        candidates.extend([
-            os.path.join(LOGOS_DIR, f"{no_year_slug}.png"),
-            os.path.join(LOGOS_DIR, f"{no_year_slug.replace('-', '_')}.png"),
-        ])
-
-    for path in candidates:
-        if os.path.isfile(path):
-            try:
-                img = Image.open(path).convert("RGBA")
-                if img.width >= 20 and img.height >= 10:
-                    print(f"[Local logos/] Logo trovato per '{query_title}' ({path})")
-                    return img
-            except Exception as exc:
-                print(f"[Local logos/] Errore lettura '{path}': {exc}")
-
-    return None
-
-
-def download_rgba_image(url: str, custom_headers: dict | None = None) -> Image.Image | None:
+def download_rgba_image(url: str) -> Image.Image | None:
     if not url:
         return None
     try:
-        r = requests.get(url, headers=custom_headers or HEADERS, timeout=20)
+        r = requests.get(url, headers=HEADERS, timeout=20)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGBA")
         if img.width < 20 or img.height < 10:
@@ -277,119 +235,6 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def fetch_from_wikipedia(query_title: str) -> Image.Image | None:
-    for lang in ("en", "it"):
-        api_url = f"https://{lang}.wikipedia.org/w/api.php"
-        try:
-            search_resp = requests.get(
-                api_url,
-                params={
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": f"{query_title} anime logo",
-                    "format": "json",
-                    "srlimit": 3,
-                },
-                headers=WIKI_HEADERS,
-                timeout=20,
-            )
-            search_resp.raise_for_status()
-            results = search_resp.json().get("query", {}).get("search", [])
-            if not results:
-                continue
-
-            page_title = str(results[0].get("title") or "").strip()
-            if not page_title:
-                continue
-
-            imgs_resp = requests.get(
-                api_url,
-                params={
-                    "action": "query",
-                    "titles": page_title,
-                    "prop": "images",
-                    "format": "json",
-                    "imlimit": 30,
-                },
-                headers=WIKI_HEADERS,
-                timeout=20,
-            )
-            imgs_resp.raise_for_status()
-            pages = imgs_resp.json().get("query", {}).get("pages", {})
-
-            logo_files: list[str] = []
-            for pdata in pages.values():
-                for im in pdata.get("images", []):
-                    fname = str(im.get("title") or "")
-                    low = fname.lower()
-                    if "logo" in low and not low.endswith(".svg"):
-                        logo_files.append(fname)
-
-            for fname in logo_files[:3]:
-                info_resp = requests.get(
-                    api_url,
-                    params={
-                        "action": "query",
-                        "titles": fname,
-                        "prop": "imageinfo",
-                        "iiprop": "url",
-                        "format": "json",
-                    },
-                    headers=WIKI_HEADERS,
-                    timeout=20,
-                )
-                info_resp.raise_for_status()
-                ipages = info_resp.json().get("query", {}).get("pages", {})
-                for ipdata in ipages.values():
-                    iinfos = ipdata.get("imageinfo", [])
-                    if not iinfos:
-                        continue
-                    img_url = str(iinfos[0].get("url") or "").strip()
-                    logo_img = download_rgba_image(img_url, custom_headers=WIKI_HEADERS)
-                    if logo_img is not None:
-                        alpha_min, alpha_max = logo_img.split()[3].getextrema()
-                        if alpha_min < 250 and alpha_max > 20:
-                            print(f"[Wikipedia/{lang}] Logo trovato per '{query_title}' ({fname})")
-                            return logo_img
-        except Exception as exc:
-            print(f"[Wikipedia/{lang}] Errore per '{query_title}': {exc}")
-
-    return None
-
-
-def fetch_from_seeklogo(query_title: str) -> Image.Image | None:
-    try:
-        search_url = f"https://seeklogo.com/search?q={quote_plus(query_title)}"
-        resp = requests.get(search_url, headers=HEADERS, timeout=20)
-        if resp.status_code != 200:
-            print(f"[Seeklogo] HTTP {resp.status_code} per '{query_title}'")
-            return None
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        candidates: list[str] = []
-
-        for img_tag in soup.find_all("img"):
-            src = str(img_tag.get("src") or img_tag.get("data-src") or "").strip()
-            if not src:
-                continue
-            full_src = urljoin("https://seeklogo.com", src)
-            if "seeklogo" in full_src.lower() or "images.seeklogo.com" in full_src.lower():
-                if not any(bad in full_src.lower() for bad in ("avatar", "icon", "sprite", "banner-ad")):
-                    candidates.append(full_src)
-
-        for cand_url in candidates[:4]:
-            logo_img = download_rgba_image(cand_url)
-            if logo_img is not None:
-                print(f"[Seeklogo] Logo trovato per '{query_title}'")
-                return logo_img
-
-        print(f"[Seeklogo] Nessun logo scaricabile per '{query_title}'")
-    except Exception as exc:
-        print(f"[Seeklogo] Errore per '{query_title}': {exc}")
-
-    return None
-
-
 def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | None]) -> Image.Image | None:
     query_title = clean_title_for_logo(title)
     cache_key = query_title.lower()
@@ -399,13 +244,6 @@ def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | Non
         return cached.copy() if cached is not None else None
 
     logo_img = fetch_from_fanart_tv(ep, query_title)
-    if logo_img is None:
-        logo_img = load_local_logo(query_title)
-    if logo_img is None:
-        logo_img = fetch_from_wikipedia(query_title)
-    if logo_img is None:
-        logo_img = fetch_from_seeklogo(query_title)
-
     logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
     return logo_img
 
