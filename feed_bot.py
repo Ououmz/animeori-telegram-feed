@@ -16,6 +16,7 @@ MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
+CUSTOM_LOGOS_FILE = "custom_logos.json"
 
 HEADERS = {
     "User-Agent": (
@@ -38,6 +39,25 @@ def load_seen() -> set[str]:
 def save_seen(seen: set[str]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, indent=2, ensure_ascii=False)
+
+
+def load_custom_logos() -> dict[str, str]:
+    if not os.path.exists(CUSTOM_LOGOS_FILE):
+        return {}
+    try:
+        with open(CUSTOM_LOGOS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {str(k).strip().lower(): str(v or "").strip() for k, v in data.items() if str(k).strip()}
+    except Exception as exc:
+        print(f"[custom_logos.json] Errore lettura: {exc}")
+    return {}
+
+
+def save_custom_logos(custom_logos: dict[str, str]) -> None:
+    ordered = {k: custom_logos[k] for k in sorted(custom_logos.keys())}
+    with open(CUSTOM_LOGOS_FILE, "w", encoding="utf-8") as f:
+        json.dump(ordered, f, indent=2, ensure_ascii=False)
 
 
 def parse_timestamp(ep: dict) -> float | None:
@@ -235,7 +255,37 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | None]) -> Image.Image | None:
+def fetch_from_custom_logos(
+    query_title: str,
+    custom_logos: dict[str, str],
+) -> tuple[Image.Image | None, bool]:
+    key = query_title.strip().lower()
+    if not key:
+        return None, False
+
+    if key in custom_logos:
+        custom_url = custom_logos[key].strip()
+        if not custom_url:
+            return None, False
+        logo_img = download_rgba_image(custom_url)
+        if logo_img is not None:
+            print(f"[custom_logos.json] Logo caricato per '{query_title}'")
+            return logo_img, False
+        print(f"[custom_logos.json] URL non valido per '{query_title}': {custom_url}")
+        return None, False
+
+    custom_logos[key] = ""
+    print(f"[custom_logos.json] Aggiunto '{key}' in attesa di link manuale")
+    return None, True
+
+
+def get_anime_logo(
+    ep: dict,
+    title: str,
+    logo_cache: dict[str, Image.Image | None],
+    custom_logos: dict[str, str],
+    custom_logos_dirty: list[bool],
+) -> Image.Image | None:
     query_title = clean_title_for_logo(title)
     cache_key = query_title.lower()
 
@@ -244,6 +294,11 @@ def get_anime_logo(ep: dict, title: str, logo_cache: dict[str, Image.Image | Non
         return cached.copy() if cached is not None else None
 
     logo_img = fetch_from_fanart_tv(ep, query_title)
+    if logo_img is None:
+        logo_img, added = fetch_from_custom_logos(query_title, custom_logos)
+        if added:
+            custom_logos_dirty[0] = True
+
     logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
     return logo_img
 
@@ -394,6 +449,8 @@ def build_banner_image(
     photo_url: str,
     title: str,
     logo_cache: dict[str, Image.Image | None],
+    custom_logos: dict[str, str],
+    custom_logos_dirty: list[bool],
 ) -> bytes | None:
     if not photo_url:
         return None
@@ -425,7 +482,7 @@ def build_banner_image(
         cover.putalpha(alpha_mask)
         canvas_rgba.alpha_composite(cover, dest=(0, 0))
 
-        logo_img = get_anime_logo(ep, title, logo_cache)
+        logo_img = get_anime_logo(ep, title, logo_cache, custom_logos, custom_logos_dirty)
         canvas_rgba = draw_logo_or_title(canvas_rgba, title, left_w=left_w, logo_img=logo_img)
 
         canvas = canvas_rgba.convert("RGB")
@@ -481,14 +538,19 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     return True
 
 
-def send_telegram_item(ep: dict, logo_cache: dict[str, Image.Image | None]) -> bool:
+def send_telegram_item(
+    ep: dict,
+    logo_cache: dict[str, Image.Image | None],
+    custom_logos: dict[str, str],
+    custom_logos_dirty: list[bool],
+) -> bool:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
     reply_markup = build_reply_markup(ep)
     photo_url = build_image_url(ep)
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache)
+    banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty)
     if banner_bytes:
         resp = telegram_post_with_retry(
             f"{api_base}/sendPhoto",
@@ -540,6 +602,8 @@ def main() -> None:
 
     ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
+    custom_logos = load_custom_logos()
+    custom_logos_dirty = [False]
     logo_cache: dict[str, Image.Image | None] = {}
     new_sent = 0
 
@@ -547,10 +611,13 @@ def main() -> None:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
-        if send_telegram_item(ep, logo_cache):
+        if send_telegram_item(ep, logo_cache, custom_logos, custom_logos_dirty):
             seen.add(ep_id)
             new_sent += 1
             time.sleep(1.5)
+
+    if custom_logos_dirty[0]:
+        save_custom_logos(custom_logos)
 
     if new_sent > 0:
         save_seen(seen)
