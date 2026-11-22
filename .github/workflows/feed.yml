@@ -28,6 +28,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EPISODES_FEED_URL: ${{ secrets.EPISODES_FEED_URL }}
+          TELEGRAM_GROUP_URL: ${{ secrets.TELEGRAM_GROUP_URL }}
           SITE_BASE_URL: "https://animeori.edgeone.dev"
           MEDIA_BASE_URL: "https://animeori.ai.studio"
         run: python feed_bot.py
