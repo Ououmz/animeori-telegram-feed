@@ -1,8 +1,10 @@
 from datetime import datetime
 import html
+from io import BytesIO
 import json
 import os
 import re
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -98,8 +100,12 @@ def build_image_url(ep: dict) -> str:
 
 
 def is_dub_ita(title: str) -> bool:
-    return bool(re.search(r"\(\s*ITA\s*\)", title, flags=re.IGNORECASE)) or bool(
-        re.search(r"\bITA\b", title, flags=re.IGNORECASE) and not re.search(r"\bSUB\s*ITA\b", title, flags=re.IGNORECASE)
+    has_sub_ita = bool(re.search(r"\bSUB\s*ITA\b", title, flags=re.IGNORECASE))
+    if has_sub_ita:
+        return False
+    return bool(
+        re.search(r"\(\s*ITA\s*\)", title, flags=re.IGNORECASE)
+        or re.search(r"\bITA\b", title, flags=re.IGNORECASE)
     )
 
 
@@ -107,14 +113,9 @@ def format_caption(ep: dict) -> str:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     raw_ep = str(ep.get("episode") or "").strip()
 
-    # Rimuove eventuale prefisso "Ep." se già presente nel campo episode
     ep_num = re.sub(r"^\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
     ep_part = f"Episodio {ep_num}" if ep_num else "Nuovo episodio"
-
-    if is_dub_ita(raw_title):
-        tag_part = "ITA HD"
-    else:
-        tag_part = "SUB ITA HD"
+    tag_part = "ITA HD" if is_dub_ita(raw_title) else "SUB ITA HD"
 
     clean_title = html.escape(raw_title)
     clean_ep_part = html.escape(ep_part)
@@ -139,6 +140,99 @@ def build_reply_markup(ep: dict) -> dict:
     return {"inline_keyboard": rows}
 
 
+def find_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+    return ImageFont.load_default()
+
+
+def wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        bbox = draw.textbbox((0, 0), candidate, font=font)
+        if (bbox[2] - bbox[0]) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def build_banner_image(photo_url: str, title: str) -> bytes | None:
+    if not photo_url:
+        return None
+    try:
+        resp = requests.get(photo_url, timeout=30)
+        resp.raise_for_status()
+        src_img = Image.open(BytesIO(resp.content)).convert("RGB")
+
+        width, height = 1200, 600
+        bg_r, bg_g, bg_b = 12, 12, 14
+        canvas = Image.new("RGB", (width, height), (bg_r, bg_g, bg_b))
+        draw = ImageDraw.Draw(canvas)
+
+        left_w = 450
+        cover = ImageOps.fit(src_img, (left_w, height), method=Image.Resampling.LANCZOS)
+        canvas.paste(cover, (0, 0))
+
+        blend_w = 40
+        start_x = max(0, left_w - blend_w)
+        for x in range(start_x, left_w):
+            alpha = max(0.0, min(1.0, (x - start_x) / float(max(1, left_w - start_x))))
+            for y in range(height):
+                cr, cg, cb = cover.getpixel((x, y))
+                nr = int(cr * (1.0 - alpha) + bg_r * alpha)
+                ng = int(cg * (1.0 - alpha) + bg_g * alpha)
+                nb = int(cb * (1.0 - alpha) + bg_b * alpha)
+                canvas.putpixel((x, y), (nr, ng, nb))
+
+        right_x0 = left_w + 48
+        right_width = width - right_x0 - 48
+        font_size = 46
+        font = find_font(font_size, bold=True)
+        lines = wrap_text_to_width(draw, title, font, right_width)
+
+        while len(lines) > 4 and font_size > 28:
+            font_size -= 4
+            font = find_font(font_size, bold=True)
+            lines = wrap_text_to_width(draw, title, font, right_width)
+
+        lines = lines[:5]
+        line_heights = []
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_heights.append(bbox[3] - bbox[1])
+
+        gap = 14
+        total_text_h = sum(line_heights) + gap * max(0, len(lines) - 1)
+        y = (height - total_text_h) // 2
+
+        for line, lh in zip(lines, line_heights):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            lw = bbox[2] - bbox[0]
+            x = right_x0 + (right_width - lw) // 2
+            draw.text((x, y), line, font=font, fill=(255, 255, 255))
+            y += lh + gap
+
+        out = BytesIO()
+        canvas.save(out, format="JPEG", quality=90, optimize=True)
+        return out.getvalue()
+    except Exception as exc:
+        print("Errore generazione banner:", exc)
+        return None
+
+
 def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     resp = requests.post(
         f"{api_base}/sendMessage",
@@ -158,11 +252,29 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
 
 
 def send_telegram_item(ep: dict) -> bool:
+    raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
     reply_markup = build_reply_markup(ep)
     photo_url = build_image_url(ep)
-
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+    banner_bytes = build_banner_image(photo_url, raw_title)
+    if banner_bytes:
+        resp = requests.post(
+            f"{api_base}/sendPhoto",
+            data={
+                "chat_id": CHAT_ID,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(reply_markup),
+            },
+            files={"photo": ("banner.jpg", banner_bytes, "image/jpeg")},
+            timeout=30,
+        )
+        if resp.ok and resp.json().get("ok", False):
+            return True
+        print("Invio banner non riuscito, provo con URL:", resp.status_code, resp.text)
+
     if photo_url:
         resp = requests.post(
             f"{api_base}/sendPhoto",
@@ -177,7 +289,7 @@ def send_telegram_item(ep: dict) -> bool:
         )
         if resp.ok and resp.json().get("ok", False):
             return True
-        print("sendPhoto non riuscito, uso sendMessage:", resp.status_code, resp.text)
+        print("sendPhoto con URL non riuscito, uso sendMessage:", resp.status_code, resp.text)
 
     return send_text_message(api_base, caption, reply_markup)
 
