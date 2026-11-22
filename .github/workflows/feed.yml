@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install requests pillow
+        run: pip install requests pillow beautifulsoup4
 
       - name: Run Telegram feed script
         env:
@@ -29,6 +29,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EPISODES_FEED_URL: ${{ secrets.EPISODES_FEED_URL }}
           TELEGRAM_GROUP_URL: ${{ secrets.TELEGRAM_GROUP_URL }}
+          FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
           SITE_BASE_URL: "https://animeori.edgeone.dev"
           MEDIA_BASE_URL: "https://animeori.ai.studio"
         run: python feed_bot.py
