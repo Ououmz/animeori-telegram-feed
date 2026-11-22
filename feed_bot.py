@@ -97,40 +97,46 @@ def build_image_url(ep: dict) -> str:
     return f"{MEDIA_BASE_URL}/{img}"
 
 
-def is_dubbed_ita(ep: dict) -> bool:
-    title = str(ep.get("title") or "")
-    ep_label = str(ep.get("episode") or "")
-    combined = f"{title} {ep_label}"
-    return bool(re.search(r"[\(\[]\s*ITA\s*[\)\]]|\bITA\b", combined, flags=re.IGNORECASE)) and not bool(
-        re.search(r"\bSUB\s*ITA\b", combined, flags=re.IGNORECASE)
+def is_dub_ita(title: str) -> bool:
+    return bool(re.search(r"\(\s*ITA\s*\)", title, flags=re.IGNORECASE)) or bool(
+        re.search(r"\bITA\b", title, flags=re.IGNORECASE) and not re.search(r"\bSUB\s*ITA\b", title, flags=re.IGNORECASE)
     )
-
-
-def build_reply_markup(ep: dict, episode_url: str) -> dict:
-    ep_raw = str(ep.get("episode") or "").strip()
-    ep_btn_label = f"Ep. {ep_raw} Streaming & Download" if ep_raw else "Streaming & Download"
-
-    keyboard = [
-        [{"text": ep_btn_label, "url": episode_url}]
-    ]
-
-    if GROUP_URL.startswith(("http://", "https://")):
-        keyboard.append([{"text": "👥 GRUPPO", "url": GROUP_URL}])
-
-    return {"inline_keyboard": keyboard}
 
 
 def format_caption(ep: dict) -> str:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
-    ep_raw = str(ep.get("episode") or "").strip()
-    lang_tag = "ITA HD" if is_dubbed_ita(ep) else "SUB ITA HD"
+    raw_ep = str(ep.get("episode") or "").strip()
 
-    title = html.escape(raw_title)
+    # Rimuove eventuale prefisso "Ep." se già presente nel campo episode
+    ep_num = re.sub(r"^\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
+    ep_part = f"Episodio {ep_num}" if ep_num else "Nuovo episodio"
 
-    if ep_raw:
-        ep_escaped = html.escape(ep_raw)
-        return f"✅ Disponibile 「<b>{title}</b>」 - Episodio {ep_escaped} {lang_tag}"
-    return f"✅ Disponibile 「<b>{title}</b>」 - {lang_tag}"
+    if is_dub_ita(raw_title):
+        tag_part = "ITA HD"
+    else:
+        tag_part = "SUB ITA HD"
+
+    clean_title = html.escape(raw_title)
+    clean_ep_part = html.escape(ep_part)
+    clean_tag_part = html.escape(tag_part)
+
+    return f"✅ Disponibile 「{clean_title}」 - {clean_ep_part} {clean_tag_part}"
+
+
+def build_reply_markup(ep: dict) -> dict:
+    raw_ep = str(ep.get("episode") or "").strip()
+    ep_num = re.sub(r"^\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
+    ep_btn_label = f"Ep. {ep_num} Streaming & Download" if ep_num else "Streaming & Download"
+
+    episode_url = build_episode_url(ep)
+    rows = [
+        [{"text": ep_btn_label, "url": episode_url}]
+    ]
+
+    if GROUP_URL:
+        rows.append([{"text": "👥 GRUPPO", "url": GROUP_URL}])
+
+    return {"inline_keyboard": rows}
 
 
 def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
@@ -140,8 +146,8 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
             "chat_id": CHAT_ID,
             "text": text,
             "parse_mode": "HTML",
+            "disable_web_page_preview": False,
             "reply_markup": reply_markup,
-            "disable_web_page_preview": True,
         },
         timeout=30,
     )
@@ -152,10 +158,9 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
 
 
 def send_telegram_item(ep: dict) -> bool:
-    episode_url = build_episode_url(ep)
-    photo_url = build_image_url(ep)
     caption = format_caption(ep)
-    reply_markup = build_reply_markup(ep, episode_url)
+    reply_markup = build_reply_markup(ep)
+    photo_url = build_image_url(ep)
 
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
     if photo_url:
@@ -203,7 +208,7 @@ def main() -> None:
 
     if new_sent > 0:
         save_seen(seen)
-        print(f"Pubblicati {new_sent} nuovi episodi in ordine cronologico.")
+        print(f"Pubblicati {new_sent} nuovi episodi.")
     else:
         print("Nessun nuovo episodio da pubblicare.")
 
