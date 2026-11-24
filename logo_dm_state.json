@@ -2,8 +2,15 @@
   "last_update_id": 669139727,
   "requested_keys": [
     "a will eternal final season",
+    "i'm dating a dark summoner",
     "red river",
     "suikoden: the anime"
   ],
-  "pending_queue": []
+  "pending_queue": [
+    {
+      "key": "i'm dating a dark summoner",
+      "title": "i'm dating a dark summoner",
+      "message_id": 11
+    }
+  ]
 }
