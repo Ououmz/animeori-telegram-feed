@@ -1,15 +1,9 @@
 {
-  "last_update_id": 669139726,
+  "last_update_id": 669139727,
   "requested_keys": [
     "a will eternal final season",
     "red river",
     "suikoden: the anime"
   ],
-  "pending_queue": [
-    {
-      "key": "red river",
-      "title": "red river",
-      "message_id": 8
-    }
-  ]
+  "pending_queue": []
 }
