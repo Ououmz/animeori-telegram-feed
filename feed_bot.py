@@ -41,21 +41,43 @@ def save_seen(seen: set[str]) -> None:
         json.dump(sorted(seen), f, indent=2, ensure_ascii=False)
 
 
-def load_custom_logos() -> dict[str, str]:
+def normalize_custom_entry(val: object) -> dict:
+    if isinstance(val, dict):
+        fanart_flag = bool(val.get("fanart", False))
+        url_val = str(val.get("url") or "").strip()
+        return {"fanart": fanart_flag, "url": url_val}
+    if isinstance(val, str):
+        url_val = val.strip()
+        return {"fanart": False, "url": url_val}
+    return {"fanart": False, "url": ""}
+
+
+def load_custom_logos() -> dict[str, dict]:
     if not os.path.exists(CUSTOM_LOGOS_FILE):
         return {}
     try:
         with open(CUSTOM_LOGOS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return {str(k).strip().lower(): str(v or "").strip() for k, v in data.items() if str(k).strip()}
+            result: dict[str, dict] = {}
+            for k, v in data.items():
+                key = str(k).strip().lower()
+                if key:
+                    result[key] = normalize_custom_entry(v)
+            return result
     except Exception as exc:
         print(f"[custom_logos.json] Errore lettura: {exc}")
     return {}
 
 
-def save_custom_logos(custom_logos: dict[str, str]) -> None:
-    ordered = {k: custom_logos[k] for k in sorted(custom_logos.keys())}
+def save_custom_logos(custom_logos: dict[str, dict]) -> None:
+    ordered = {
+        k: {
+            "fanart": bool(custom_logos[k].get("fanart", False)),
+            "url": str(custom_logos[k].get("url") or "").strip(),
+        }
+        for k in sorted(custom_logos.keys())
+    }
     with open(CUSTOM_LOGOS_FILE, "w", encoding="utf-8") as f:
         json.dump(ordered, f, indent=2, ensure_ascii=False)
 
@@ -255,52 +277,58 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def fetch_from_custom_logos(
-    query_title: str,
-    custom_logos: dict[str, str],
-) -> tuple[Image.Image | None, bool]:
-    key = query_title.strip().lower()
-    if not key:
-        return None, False
-
-    if key in custom_logos:
-        custom_url = custom_logos[key].strip()
-        if not custom_url:
-            return None, False
-        logo_img = download_rgba_image(custom_url)
-        if logo_img is not None:
-            print(f"[custom_logos.json] Logo caricato per '{query_title}'")
-            return logo_img, False
-        print(f"[custom_logos.json] URL non valido per '{query_title}': {custom_url}")
-        return None, False
-
-    custom_logos[key] = ""
-    print(f"[custom_logos.json] Aggiunto '{key}' in attesa di link manuale")
-    return None, True
-
-
 def get_anime_logo(
     ep: dict,
     title: str,
     logo_cache: dict[str, Image.Image | None],
-    custom_logos: dict[str, str],
+    custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
 ) -> Image.Image | None:
     query_title = clean_title_for_logo(title)
-    cache_key = query_title.lower()
+    cache_key = query_title.strip().lower()
+    if not cache_key:
+        return None
 
     if cache_key in logo_cache:
         cached = logo_cache[cache_key]
         return cached.copy() if cached is not None else None
 
-    logo_img = fetch_from_fanart_tv(ep, query_title)
-    if logo_img is None:
-        logo_img, added = fetch_from_custom_logos(query_title, custom_logos)
-        if added:
-            custom_logos_dirty[0] = True
+    entry = custom_logos.get(cache_key)
+    is_new_entry = entry is None
+    if is_new_entry:
+        entry = {"fanart": False, "url": ""}
 
-    logo_cache[cache_key] = logo_img.copy() if logo_img is not None else None
-    return logo_img
+    fanart_enabled = bool(entry.get("fanart", False))
+    custom_url = str(entry.get("url") or "").strip()
+
+    # Se l'utente ha sbloccato l'override manuale (fanart == False) e ha inserito un URL custom, usa quello
+    if not fanart_enabled and custom_url:
+        logo_img = download_rgba_image(custom_url)
+        if logo_img is not None:
+            print(f"[custom_logos.json] Logo custom caricato per '{query_title}'")
+            logo_cache[cache_key] = logo_img.copy()
+            return logo_img
+        print(f"[custom_logos.json] URL custom non valido per '{query_title}': {custom_url}")
+        logo_cache[cache_key] = None
+        return None
+
+    # Prova Fanart.tv (sempre per le nuove voci o quando fanart == True)
+    logo_img = fetch_from_fanart_tv(ep, query_title)
+    if logo_img is not None:
+        if is_new_entry or not fanart_enabled:
+            custom_logos[cache_key] = {"fanart": True, "url": custom_url}
+            custom_logos_dirty[0] = True
+        logo_cache[cache_key] = logo_img.copy()
+        return logo_img
+
+    # Se Fanart.tv non ha trovato nulla, registra comunque la voce con fanart: false per permettere l'aggiunta manuale dell'URL
+    if is_new_entry:
+        custom_logos[cache_key] = {"fanart": False, "url": custom_url}
+        custom_logos_dirty[0] = True
+        print(f"[custom_logos.json] Aggiunto '{cache_key}' (fanart=false) in attesa di URL")
+
+    logo_cache[cache_key] = None
+    return None
 
 
 def format_caption(ep: dict) -> str:
@@ -449,7 +477,7 @@ def build_banner_image(
     photo_url: str,
     title: str,
     logo_cache: dict[str, Image.Image | None],
-    custom_logos: dict[str, str],
+    custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
 ) -> bytes | None:
     if not photo_url:
@@ -541,7 +569,7 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
 def send_telegram_item(
     ep: dict,
     logo_cache: dict[str, Image.Image | None],
-    custom_logos: dict[str, str],
+    custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
 ) -> bool:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
