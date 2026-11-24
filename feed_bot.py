@@ -29,6 +29,7 @@ HEADERS = {
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
 URL_REGEX = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)
+KEY_URL_LINE_REGEX = re.compile(r"^([^:\n]+?)\s*:\s*(https?://\S+)?\s*$", flags=re.IGNORECASE)
 
 
 def load_seen() -> set[str]:
@@ -626,6 +627,55 @@ def send_dm_text(text: str, reply_to_message_id: int | None = None) -> int | Non
     return None
 
 
+def parse_key_url_pairs_from_text(text: str) -> list[tuple[str, str]]:
+    """
+    Supporta:
+    - Metodo 2: righe 'chiave: https://esempio.com/logo.png'
+    - Metodo 3: 'chiave: https://esempio.com' seguita da riga '/logo.png'
+      (oppure 'chiave:' seguita da 'https://esempio.com/logo.png')
+    """
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    pairs: list[tuple[str, str]] = []
+    idx = 0
+
+    while idx < len(raw_lines):
+        line = raw_lines[idx]
+        m = KEY_URL_LINE_REGEX.match(line)
+        if m:
+            raw_key = m.group(1).strip().lower()
+            inline_url = (m.group(2) or "").strip()
+
+            # Controlla se la riga successiva è una continuazione dell'URL (es. '/logo.png' o resto del link)
+            next_url = ""
+            if idx + 1 < len(raw_lines):
+                nxt = raw_lines[idx + 1].strip()
+                if not KEY_URL_LINE_REGEX.match(nxt) and not URL_REGEX.match(nxt) and (
+                    nxt.startswith("/") or (inline_url and not inline_url.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")))
+                ):
+                    next_url = nxt
+                    idx += 1
+
+            combined_url = f"{inline_url}{next_url}".strip().rstrip(".,;:!?")
+            if raw_key and re.match(r"^https?://\S+$", combined_url, flags=re.IGNORECASE):
+                pairs.append((raw_key, combined_url))
+            idx += 1
+            continue
+
+        # Caso in cui 'chiave:' è su una riga e l'URL completo è sulla riga seguente
+        if line.endswith(":") and len(line) > 1 and idx + 1 < len(raw_lines):
+            raw_key = line[:-1].strip().lower()
+            nxt = raw_lines[idx + 1].strip()
+            url_matches = URL_REGEX.findall(nxt)
+            if raw_key and url_matches:
+                pairs.append((raw_key, url_matches[0].rstrip(".,;:!?")))
+                idx += 2
+                continue
+
+        idx += 1
+
+    return pairs
+
+
 def process_dm_replies(
     dm_state: dict,
     custom_logos: dict[str, dict],
@@ -678,6 +728,30 @@ def process_dm_replies(
         if not text:
             continue
 
+        reply_to = msg.get("reply_to_message")
+        replied_mid = reply_to.get("message_id") if isinstance(reply_to, dict) else None
+
+        # Metodo 2 e Metodo 3: coppie 'chiave: url' (anche multilinea o con '/path' nella riga successiva)
+        kv_pairs = parse_key_url_pairs_from_text(text)
+        if kv_pairs:
+            updated_items: list[str] = []
+            handled_keys = set(k for k, _ in kv_pairs)
+            queue = [q for q in queue if str(q.get("key") or "").strip().lower() not in handled_keys]
+
+            for key, logo_url in kv_pairs:
+                custom_logos[key] = {"fanart": False, "url": logo_url}
+                updated_items.append(f"• <code>{html.escape(key)}</code> → {html.escape(logo_url)}")
+                print(f"[DM] Salvato logo per '{key}' -> {logo_url}")
+
+            custom_logos_dirty[0] = True
+            dm_state_dirty[0] = True
+            send_dm_text(
+                "✅ Loghi aggiornati su <code>custom_logos.json</code>:\n" + "\n".join(updated_items),
+                reply_to_message_id=msg.get("message_id"),
+            )
+            continue
+
+        # Metodo classico ("Rispondi" con URL) + fallback su coda se URL semplice
         matches = URL_REGEX.findall(text)
         if not matches:
             continue
@@ -688,9 +762,7 @@ def process_dm_replies(
             continue
 
         target_idx = 0
-        reply_to = msg.get("reply_to_message")
-        if isinstance(reply_to, dict) and reply_to.get("message_id") is not None:
-            replied_mid = reply_to.get("message_id")
+        if replied_mid is not None:
             for idx, q_item in enumerate(queue):
                 if q_item.get("message_id") == replied_mid:
                     target_idx = idx
@@ -738,7 +810,7 @@ def notify_missing_custom_logos(
 
         mid = send_dm_text(
             f"🖼️ Nessun logo trovato su Fanart.tv per <b>{html.escape(key)}</b>.\n"
-            f"Rispondi a questo messaggio con il link diretto dell'immagine per impostarlo su <code>custom_logos.json</code>."
+            f"Rispondi a questo messaggio con l'URL diretto, oppure scrivi <code>{html.escape(key)}: URL</code>."
         )
         requested_set.add(key)
         queue.append({
