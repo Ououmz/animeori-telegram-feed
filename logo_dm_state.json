@@ -1,13 +1,7 @@
 {
-  "last_update_id": 669139724,
+  "last_update_id": 669139725,
   "requested_keys": [
     "suikoden: the anime"
   ],
-  "pending_queue": [
-    {
-      "key": "suikoden: the anime",
-      "title": "suikoden: the anime",
-      "message_id": 2
-    }
-  ]
+  "pending_queue": []
 }
