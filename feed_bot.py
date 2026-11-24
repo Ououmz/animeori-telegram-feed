@@ -10,6 +10,7 @@ import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
 FEED_URL = os.environ["EPISODES_FEED_URL"]
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://animeori.edgeone.dev").rstrip("/")
 MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").rstrip("/")
@@ -17,6 +18,7 @@ GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
 CUSTOM_LOGOS_FILE = "custom_logos.json"
+DM_STATE_FILE = "logo_dm_state.json"
 
 HEADERS = {
     "User-Agent": (
@@ -26,6 +28,7 @@ HEADERS = {
 }
 
 DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
+URL_REGEX = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)
 
 
 def load_seen() -> set[str]:
@@ -80,6 +83,60 @@ def save_custom_logos(custom_logos: dict[str, dict]) -> None:
     }
     with open(CUSTOM_LOGOS_FILE, "w", encoding="utf-8") as f:
         json.dump(ordered, f, indent=2, ensure_ascii=False)
+
+
+def load_dm_state() -> dict:
+    default_state = {
+        "last_update_id": 0,
+        "requested_keys": [],
+        "pending_queue": [],
+    }
+    if not os.path.exists(DM_STATE_FILE):
+        return default_state
+    try:
+        with open(DM_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            last_upd = int(data.get("last_update_id") or 0)
+            req_keys = [
+                str(x).strip().lower()
+                for x in (data.get("requested_keys") or [])
+                if str(x).strip()
+            ]
+            queue: list[dict] = []
+            for item in (data.get("pending_queue") or []):
+                if isinstance(item, dict) and str(item.get("key") or "").strip():
+                    queue.append({
+                        "key": str(item["key"]).strip().lower(),
+                        "title": str(item.get("title") or item["key"]).strip(),
+                        "message_id": item.get("message_id"),
+                    })
+            return {
+                "last_update_id": last_upd,
+                "requested_keys": req_keys,
+                "pending_queue": queue,
+            }
+    except Exception as exc:
+        print(f"[logo_dm_state.json] Errore lettura: {exc}")
+    return default_state
+
+
+def save_dm_state(dm_state: dict) -> None:
+    clean_state = {
+        "last_update_id": int(dm_state.get("last_update_id") or 0),
+        "requested_keys": sorted(set(str(x).strip().lower() for x in (dm_state.get("requested_keys") or []) if str(x).strip())),
+        "pending_queue": [
+            {
+                "key": str(item["key"]).strip().lower(),
+                "title": str(item.get("title") or item["key"]).strip(),
+                "message_id": item.get("message_id"),
+            }
+            for item in (dm_state.get("pending_queue") or [])
+            if isinstance(item, dict) and str(item.get("key") or "").strip()
+        ],
+    }
+    with open(DM_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(clean_state, f, indent=2, ensure_ascii=False)
 
 
 def parse_timestamp(ep: dict) -> float | None:
@@ -301,7 +358,6 @@ def get_anime_logo(
     fanart_enabled = bool(entry.get("fanart", False))
     custom_url = str(entry.get("url") or "").strip()
 
-    # Se l'utente ha sbloccato l'override manuale (fanart == False) e ha inserito un URL custom, usa quello
     if not fanart_enabled and custom_url:
         logo_img = download_rgba_image(custom_url)
         if logo_img is not None:
@@ -312,7 +368,6 @@ def get_anime_logo(
         logo_cache[cache_key] = None
         return None
 
-    # Prova Fanart.tv (sempre per le nuove voci o quando fanart == True)
     logo_img = fetch_from_fanart_tv(ep, query_title)
     if logo_img is not None:
         if is_new_entry or not fanart_enabled:
@@ -321,7 +376,6 @@ def get_anime_logo(
         logo_cache[cache_key] = logo_img.copy()
         return logo_img
 
-    # Se Fanart.tv non ha trovato nulla, registra comunque la voce con fanart: false per permettere l'aggiunta manuale dell'URL
     if is_new_entry:
         custom_logos[cache_key] = {"fanart": False, "url": custom_url}
         custom_logos_dirty[0] = True
@@ -547,6 +601,158 @@ def telegram_post_with_retry(
     return None
 
 
+def send_dm_text(text: str, reply_to_message_id: int | None = None) -> int | None:
+    if not ADMIN_CHAT_ID:
+        return None
+    api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    payload: dict = {
+        "chat_id": ADMIN_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = reply_to_message_id
+
+    resp = telegram_post_with_retry(f"{api_base}/sendMessage", json_payload=payload)
+    if resp is None or not resp.ok:
+        return None
+    try:
+        body = resp.json()
+        if body.get("ok"):
+            return body.get("result", {}).get("message_id")
+    except Exception:
+        pass
+    return None
+
+
+def process_dm_replies(
+    dm_state: dict,
+    custom_logos: dict[str, dict],
+    custom_logos_dirty: list[bool],
+    dm_state_dirty: list[bool],
+) -> None:
+    if not ADMIN_CHAT_ID:
+        return
+
+    api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    offset = int(dm_state.get("last_update_id") or 0) + 1
+
+    try:
+        resp = requests.get(
+            f"{api_base}/getUpdates",
+            params={"offset": offset, "timeout": 5, "allowed_updates": json.dumps(["message"])},
+            timeout=20,
+        )
+        if not resp.ok:
+            print(f"[DM getUpdates] HTTP {resp.status_code}")
+            return
+        body = resp.json()
+        if not body.get("ok"):
+            return
+        updates = body.get("result") or []
+    except Exception as exc:
+        print(f"[DM getUpdates] Errore: {exc}")
+        return
+
+    max_seen_update_id = int(dm_state.get("last_update_id") or 0)
+    queue: list[dict] = list(dm_state.get("pending_queue") or [])
+
+    for upd in updates:
+        if not isinstance(upd, dict):
+            continue
+        upd_id = int(upd.get("update_id") or 0)
+        if upd_id > max_seen_update_id:
+            max_seen_update_id = upd_id
+            dm_state_dirty[0] = True
+
+        msg = upd.get("message")
+        if not isinstance(msg, dict):
+            continue
+
+        chat = msg.get("chat") or {}
+        if str(chat.get("id") or "") != ADMIN_CHAT_ID:
+            continue
+
+        text = str(msg.get("text") or msg.get("caption") or "").strip()
+        if not text:
+            continue
+
+        matches = URL_REGEX.findall(text)
+        if not matches:
+            continue
+
+        logo_url = matches[0].rstrip(".,;:!?")
+        if not queue:
+            send_dm_text("ℹ️ Nessun anime in attesa di logo al momento.", reply_to_message_id=msg.get("message_id"))
+            continue
+
+        target_idx = 0
+        reply_to = msg.get("reply_to_message")
+        if isinstance(reply_to, dict) and reply_to.get("message_id") is not None:
+            replied_mid = reply_to.get("message_id")
+            for idx, q_item in enumerate(queue):
+                if q_item.get("message_id") == replied_mid:
+                    target_idx = idx
+                    break
+
+        target = queue.pop(target_idx)
+        key = str(target["key"]).strip().lower()
+        title_label = str(target.get("title") or key).strip()
+
+        custom_logos[key] = {"fanart": False, "url": logo_url}
+        custom_logos_dirty[0] = True
+        dm_state_dirty[0] = True
+
+        print(f"[DM] Salvato logo per '{key}' -> {logo_url}")
+        send_dm_text(
+            f"✅ Logo salvato per <b>{html.escape(title_label)}</b> (<code>{html.escape(key)}</code>):\n{html.escape(logo_url)}\nVerrà usato dai prossimi episodi dopo il commit.",
+            reply_to_message_id=msg.get("message_id"),
+        )
+
+    dm_state["last_update_id"] = max_seen_update_id
+    dm_state["pending_queue"] = queue
+
+
+def notify_missing_custom_logos(
+    dm_state: dict,
+    custom_logos: dict[str, dict],
+    dm_state_dirty: list[bool],
+) -> None:
+    if not ADMIN_CHAT_ID:
+        return
+
+    requested_set = set(str(x).strip().lower() for x in (dm_state.get("requested_keys") or []) if str(x).strip())
+    queue: list[dict] = list(dm_state.get("pending_queue") or [])
+    queued_keys = set(str(item.get("key") or "").strip().lower() for item in queue)
+
+    for key in sorted(custom_logos.keys()):
+        entry = custom_logos[key]
+        fanart_enabled = bool(entry.get("fanart", False))
+        url_val = str(entry.get("url") or "").strip()
+
+        if fanart_enabled or url_val:
+            continue
+        if key in requested_set or key in queued_keys:
+            continue
+
+        mid = send_dm_text(
+            f"🖼️ Nessun logo trovato su Fanart.tv per <b>{html.escape(key)}</b>.\n"
+            f"Rispondi a questo messaggio con il link diretto dell'immagine per impostarlo su <code>custom_logos.json</code>."
+        )
+        requested_set.add(key)
+        queue.append({
+            "key": key,
+            "title": key,
+            "message_id": mid,
+        })
+        dm_state_dirty[0] = True
+        time.sleep(0.5)
+
+    dm_state["requested_keys"] = sorted(requested_set)
+    dm_state["pending_queue"] = queue
+
+
 def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
     resp = telegram_post_with_retry(
         f"{api_base}/sendMessage",
@@ -617,6 +823,13 @@ def send_telegram_item(
 
 
 def main() -> None:
+    custom_logos = load_custom_logos()
+    custom_logos_dirty = [False]
+    dm_state = load_dm_state()
+    dm_state_dirty = [False]
+
+    process_dm_replies(dm_state, custom_logos, custom_logos_dirty, dm_state_dirty)
+
     res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
     res.raise_for_status()
     payload = res.json()
@@ -630,8 +843,6 @@ def main() -> None:
 
     ordered_episodes = order_episodes_chronologically(episodes)
     seen = load_seen()
-    custom_logos = load_custom_logos()
-    custom_logos_dirty = [False]
     logo_cache: dict[str, Image.Image | None] = {}
     new_sent = 0
 
@@ -644,8 +855,13 @@ def main() -> None:
             new_sent += 1
             time.sleep(1.5)
 
+    notify_missing_custom_logos(dm_state, custom_logos, dm_state_dirty)
+
     if custom_logos_dirty[0]:
         save_custom_logos(custom_logos)
+
+    if dm_state_dirty[0]:
+        save_dm_state(dm_state)
 
     if new_sent > 0:
         save_seen(seen)
