@@ -5,7 +5,8 @@
     "i'm dating a dark summoner",
     "my girlfriend's friend",
     "red river",
-    "suikoden: the anime"
+    "suikoden: the anime",
+    "the lonely snow widow and the cursed ring"
   ],
   "pending_queue": [
     {
@@ -17,6 +18,11 @@
       "key": "my girlfriend's friend",
       "title": "my girlfriend's friend",
       "message_id": 12
+    },
+    {
+      "key": "the lonely snow widow and the cursed ring",
+      "title": "the lonely snow widow and the cursed ring",
+      "message_id": 13
     }
   ]
 }
