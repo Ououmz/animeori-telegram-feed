@@ -2,8 +2,12 @@ name: AnimeOri Telegram Feed
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: animeori-telegram-feed
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -44,6 +48,7 @@ jobs:
           git add seen_episodes.json custom_logos.json
           if ! git diff --staged --quiet; then
             git commit -m "Update seen_episodes.json and custom_logos.json"
+            git pull --rebase --autostash origin HEAD
             git push
           else
             echo "Nessuna modifica a seen_episodes.json o custom_logos.json"
