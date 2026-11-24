@@ -3,6 +3,7 @@
   "requested_keys": [
     "a will eternal final season",
     "i'm dating a dark summoner",
+    "my girlfriend's friend",
     "red river",
     "suikoden: the anime"
   ],
@@ -11,6 +12,11 @@
       "key": "i'm dating a dark summoner",
       "title": "i'm dating a dark summoner",
       "message_id": 11
+    },
+    {
+      "key": "my girlfriend's friend",
+      "title": "my girlfriend's friend",
+      "message_id": 12
     }
   ]
 }
