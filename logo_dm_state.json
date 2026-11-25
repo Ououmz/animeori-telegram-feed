@@ -1,7 +1,14 @@
 {
   "last_update_id": 669139731,
   "requested_keys": [
+    "magic knight rayearth (2026)",
     "paw & palaces"
   ],
-  "pending_queue": []
+  "pending_queue": [
+    {
+      "key": "magic knight rayearth (2026)",
+      "title": "magic knight rayearth (2026)",
+      "message_id": 41
+    }
+  ]
 }
