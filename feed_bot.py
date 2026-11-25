@@ -420,13 +420,13 @@ def format_caption(ep: dict) -> str:
         ep_part = "Nuovo episodio"
 
     tag_part = "ITA HD" if is_dub_ita(raw_title) else "SUB ITA HD"
-    final_suffix = " (FINE)" if is_final_episode(ep, end_ep_num) else ""
+    final_suffix = " <b>(FINE)</b>" if is_final_episode(ep, end_ep_num) else ""
 
     clean_title = html.escape(raw_title)
     clean_ep_part = html.escape(ep_part)
     clean_tag_part = html.escape(tag_part)
 
-    return f"✅ Disponibile 「{clean_title}」 - {clean_ep_part} {clean_tag_part}{final_suffix}"
+    return f"✅ Disponibile 「<b>{clean_title}</b>」 - {clean_ep_part} {clean_tag_part}{final_suffix}"
 
 
 def build_reply_markup(ep: dict) -> dict:
