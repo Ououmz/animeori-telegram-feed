@@ -251,6 +251,60 @@ def is_final_episode(ep: dict, end_ep_num: int | None) -> bool:
     return False
 
 
+def _truthy_flag(val: object) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "si", "sì")
+    return False
+
+
+def extract_extra_tags(ep: dict, raw_title: str) -> list[str]:
+    type_parts: list[str] = []
+    for k in ("type", "format", "category", "kind", "mediaType", "media_type", "animeType", "anime_type"):
+        v = ep.get(k)
+        if isinstance(v, str) and v.strip():
+            type_parts.append(v.strip().lower())
+
+    for list_k in ("tags", "badges", "flags"):
+        lv = ep.get(list_k)
+        if isinstance(lv, list):
+            for item in lv:
+                if isinstance(item, str) and item.strip():
+                    type_parts.append(item.strip().lower())
+
+    type_blob = " | ".join(type_parts)
+    text_blob = f"{raw_title} | {ep.get('episode') or ''}".lower()
+
+    is_tv = bool(re.search(r"\btv\b", type_blob))
+    is_ona = bool(re.search(r"\bona\b", type_blob)) or bool(re.search(r"\bona\b", text_blob))
+    is_ova = bool(re.search(r"\bova\b", type_blob)) or bool(re.search(r"\bova\b", text_blob))
+    is_special = bool(re.search(r"\bspecial\b|\bspeciale\b", type_blob)) or bool(
+        re.search(r"\bspecial\b|\bspeciale\b", text_blob)
+    )
+    is_movie = bool(re.search(r"\bmovie\b|\bfilm\b", type_blob)) or bool(
+        re.search(r"\bmovie\b|\bfilm\b", text_blob)
+    )
+
+    explicit_new_series = any(
+        _truthy_flag(ep.get(k))
+        for k in ("isNewSeries", "is_new_series", "newSeries", "new_series", "isNew", "is_new")
+    ) or bool(re.search(r"\bnuova\s+serie\b|\bnew\s+series\b", f"{type_blob} | {text_blob}"))
+
+    has_new_series = explicit_new_series and (is_tv or is_ona or not type_blob)
+
+    tags: list[str] = []
+    if has_new_series:
+        tags.append("<b>(Nuova Serie)</b>")
+    if is_movie:
+        tags.append("<b>(Nuovo Movie)</b>")
+    if is_special:
+        tags.append("<b>(Nuovo Special)</b>")
+    if is_ova:
+        tags.append("<b>(Nuovo OVA)</b>")
+    return tags
+
+
 def download_rgba_image(url: str) -> Image.Image | None:
     if not url:
         return None
@@ -420,13 +474,17 @@ def format_caption(ep: dict) -> str:
         ep_part = "Nuovo episodio"
 
     tag_part = "ITA HD" if is_dub_ita(raw_title) else "SUB ITA HD"
-    final_suffix = " <b>(FINE)</b>" if is_final_episode(ep, end_ep_num) else ""
+    suffixes: list[str] = []
+    if is_final_episode(ep, end_ep_num):
+        suffixes.append("<b>(FINE)</b>")
+    suffixes.extend(extract_extra_tags(ep, raw_title))
+    suffix_str = (" " + " ".join(suffixes)) if suffixes else ""
 
     clean_title = html.escape(raw_title)
     clean_ep_part = html.escape(ep_part)
     clean_tag_part = html.escape(tag_part)
 
-    return f"↘️ Disponibile 「<b>{clean_title}</b>」 - {clean_ep_part} {clean_tag_part}{final_suffix}"
+    return f"↘️ Disponibile 「<b>{clean_title}</b>」 - {clean_ep_part} {clean_tag_part}{suffix_str}"
 
 
 def build_reply_markup(ep: dict) -> dict:
