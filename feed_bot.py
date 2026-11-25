@@ -16,10 +16,6 @@ SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://animeori.edgeone.dev").
 MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "https://animeori.ai.studio").rstrip("/")
 GROUP_URL = os.environ.get("TELEGRAM_GROUP_URL", "").strip()
 FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
-REMIX_TMDB_BASE_URL = os.environ.get(
-    "REMIX_TMDB_BASE_URL", "https://remix-tmdb-data-studio-4904.ai.studio"
-).rstrip("/")
-REMIX_TMDB_API_KEY = os.environ.get("REMIX_TMDB_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
 CUSTOM_LOGOS_FILE = "custom_logos.json"
 DM_STATE_FILE = "logo_dm_state.json"
@@ -231,6 +227,72 @@ def clean_title_for_logo(title: str) -> str:
     return cleaned or title.strip()
 
 
+def _extract_int(val: object) -> int | None:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return int(val)
+    m = re.search(r"\d+", str(val))
+    return int(m.group(0)) if m else None
+
+
+def parse_episode_range(ep: dict) -> tuple[str, int | None, bool]:
+    """
+    Restituisce:
+    - label_num: es. '5' oppure '154-170'
+    - end_ep_num: numero finale dell'uscita (se determinabile)
+    - is_range: True se sono usciti più episodi nello stesso momento
+    """
+    raw_ep = str(ep.get("episode") or "").strip()
+    cleaned_ep = re.sub(r"^\s*episodi?\s*[:\-]?\s*|\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
+
+    start_val = _extract_int(ep.get("episodeStart") if ep.get("episodeStart") is not None else ep.get("episode_start"))
+    end_val = _extract_int(ep.get("episodeEnd") if ep.get("episodeEnd") is not None else ep.get("episode_end"))
+    count_val = _extract_int(ep.get("episodesCount") if ep.get("episodesCount") is not None else ep.get("episodes_count"))
+
+    range_match = re.search(r"(\d+)\s*[-–—]\s*(\d+)", cleaned_ep)
+    if range_match:
+        a = int(range_match.group(1))
+        b = int(range_match.group(2))
+        if b > a:
+            return f"{a}-{b}", b, True
+        return f"{a}", a, False
+
+    if start_val is not None and end_val is not None and end_val > start_val:
+        return f"{start_val}-{end_val}", end_val, True
+
+    single_match = re.search(r"\d+", cleaned_ep)
+    single_num = int(single_match.group(0)) if single_match else start_val
+
+    if count_val is not None and count_val > 1 and single_num is not None:
+        end_calc = single_num + count_val - 1
+        return f"{single_num}-{end_calc}", end_calc, True
+
+    if single_num is not None:
+        return str(single_num), single_num, False
+
+    return cleaned_ep, None, False
+
+
+def is_final_episode(ep: dict, end_ep_num: int | None) -> bool:
+    for flag_key in ("isFinal", "is_final", "isLastEpisode", "is_last_episode", "isCompleted", "is_completed", "final"):
+        val = ep.get(flag_key)
+        if isinstance(val, bool) and val:
+            return True
+        if isinstance(val, str) and val.strip().lower() in ("true", "1", "yes", "fine"):
+            return True
+
+    if re.search(r"\(\s*FINE\s*\)|\bFINE\b", str(ep.get("episode") or ""), flags=re.IGNORECASE):
+        return True
+
+    for total_key in ("totalEpisodes", "total_episodes", "lastEpisode", "last_episode", "maxEpisodes", "max_episodes"):
+        total_val = _extract_int(ep.get(total_key))
+        if total_val is not None and total_val > 0 and end_ep_num is not None and end_ep_num >= total_val:
+            return True
+
+    return False
+
+
 def download_rgba_image(url: str) -> Image.Image | None:
     if not url:
         return None
@@ -246,48 +308,36 @@ def download_rgba_image(url: str) -> Image.Image | None:
         return None
 
 
-def lang_rank(lang_val: str) -> int:
-    lang = str(lang_val or "").strip().lower()
-    if lang in ("ja", "jp", "jpn"):
-        return 0
-    if lang in ("en", "eng"):
-        return 1
-    return 2
-
-
-def extract_show_ids(ep: dict) -> dict[str, str]:
-    found: dict[str, str] = {}
+def extract_fanart_show_id(ep: dict) -> str:
+    candidate_keys = (
+        "tvdb_id",
+        "tvdbId",
+        "thetvdb_id",
+        "tvdb",
+        "tmdb_id",
+        "tmdbId",
+        "tmdb",
+        "show_id",
+        "showId",
+        "series_id",
+        "seriesId",
+    )
     containers: list[dict] = [ep]
     for sub_key in ("show", "series", "anime", "ids", "meta", "metadata"):
         sub_val = ep.get(sub_key)
         if isinstance(sub_val, dict):
             containers.append(sub_val)
 
-    id_groups = {
-        "tvdb": ("tvdb_id", "tvdbId", "thetvdb_id", "tvdb"),
-        "tmdb": ("tmdb_id", "tmdbId", "tmdb"),
-        "show": ("show_id", "showId", "series_id", "seriesId"),
-    }
-
     for box in containers:
-        for group_name, keys in id_groups.items():
-            if group_name in found:
+        for key in candidate_keys:
+            val = box.get(key)
+            if val is None:
                 continue
-            for key in keys:
-                val = box.get(key)
-                if val is None:
-                    continue
-                s = str(val).strip()
-                digits = re.sub(r"\D+", "", s)
-                if digits and (s.isdigit() or key.lower().startswith(("tvdb", "tmdb", "show", "series"))):
-                    found[group_name] = digits
-                    break
-    return found
-
-
-def extract_fanart_show_id(ep: dict) -> str:
-    ids = extract_show_ids(ep)
-    return ids.get("tvdb") or ids.get("tmdb") or ids.get("show") or ""
+            s = str(val).strip()
+            digits = re.sub(r"\D+", "", s)
+            if digits and (s.isdigit() or key.lower().startswith(("tvdb", "tmdb", "show", "series"))):
+                return digits
+    return ""
 
 
 def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
@@ -313,6 +363,15 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
             return None
 
         data = resp.json()
+
+        def lang_rank(lang_val: str) -> int:
+            lang = lang_val.strip().lower()
+            if lang == "ja":
+                return 0
+            if lang == "en":
+                return 1
+            return 2
+
         candidates: list[tuple[int, int, str, str]] = []
         for field_idx, field in enumerate(("hdtvlogo", "clearlogo")):
             items = data.get(field)
@@ -342,92 +401,6 @@ def fetch_from_fanart_tv(ep: dict, query_title: str) -> Image.Image | None:
     return None
 
 
-def _normalize_candidate_url(raw_url: str, base_url: str) -> str:
-    u = str(raw_url or "").strip()
-    if not u:
-        return ""
-    if u.startswith("http://") or u.startswith("https://"):
-        return u
-    if u.startswith("/"):
-        return f"{base_url}{u}"
-    return ""
-
-
-def _collect_logo_candidates_from_payload(
-    obj: object,
-    base_url: str,
-    out: list[tuple[int, int, str, str]],
-) -> None:
-    if isinstance(obj, dict):
-        # Cerca oggetti con URL e eventuale lingua
-        for url_key in ("logo_url", "logo", "url", "image", "image_url", "file_path"):
-            val = obj.get(url_key)
-            if isinstance(val, str) and val.strip():
-                norm_url = _normalize_candidate_url(val, base_url)
-                if norm_url:
-                    lang_val = str(obj.get("lang") or obj.get("iso_639_1") or obj.get("language") or "").strip()
-                    type_hint = str(obj.get("type") or obj.get("aspect") or "").lower()
-                    priority_boost = 0 if ("logo" in url_key or "logo" in type_hint) else 1
-                    out.append((lang_rank(lang_val), priority_boost, lang_val or "n/d", norm_url))
-
-        for field_idx, field_name in enumerate(("hdtvlogo", "clearlogo", "logos", "images", "results", "data", "items")):
-            sub = obj.get(field_name)
-            if isinstance(sub, (list, dict)):
-                _collect_logo_candidates_from_payload(sub, base_url, out)
-
-        for k, v in obj.items():
-            if k not in ("hdtvlogo", "clearlogo", "logos", "images", "results", "data", "items") and isinstance(v, (list, dict)):
-                _collect_logo_candidates_from_payload(v, base_url, out)
-
-    elif isinstance(obj, list):
-        for item in obj:
-            _collect_logo_candidates_from_payload(item, base_url, out)
-
-
-def fetch_from_remix_tmdb(ep: dict, query_title: str) -> Image.Image | None:
-    if not REMIX_TMDB_BASE_URL:
-        return None
-    if not REMIX_TMDB_API_KEY:
-        print(f"[Remix TMDB] REMIX_TMDB_API_KEY assente per '{query_title}'")
-        return None
-
-    ids = extract_show_ids(ep)
-    headers = dict(HEADERS)
-    headers["Authorization"] = f"Bearer {REMIX_TMDB_API_KEY}"
-    headers["X-API-Key"] = REMIX_TMDB_API_KEY
-
-    request_specs: list[tuple[str, dict]] = []
-    if ids.get("tmdb"):
-        request_specs.append((f"{REMIX_TMDB_BASE_URL}/api/tv/{ids['tmdb']}/logos", {"api_key": REMIX_TMDB_API_KEY}))
-        request_specs.append((f"{REMIX_TMDB_BASE_URL}/api/logos", {"tmdb_id": ids["tmdb"], "api_key": REMIX_TMDB_API_KEY}))
-    if ids.get("tvdb"):
-        request_specs.append((f"{REMIX_TMDB_BASE_URL}/api/logos", {"tvdb_id": ids["tvdb"], "api_key": REMIX_TMDB_API_KEY}))
-    if query_title:
-        request_specs.append((f"{REMIX_TMDB_BASE_URL}/api/logos", {"query": query_title, "title": query_title, "api_key": REMIX_TMDB_API_KEY}))
-        request_specs.append((f"{REMIX_TMDB_BASE_URL}/api/search", {"query": query_title, "api_key": REMIX_TMDB_API_KEY}))
-
-    for endpoint_url, params in request_specs:
-        try:
-            resp = requests.get(endpoint_url, params=params, headers=headers, timeout=20)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
-            candidates: list[tuple[int, int, str, str]] = []
-            _collect_logo_candidates_from_payload(data, REMIX_TMDB_BASE_URL, candidates)
-            candidates.sort(key=lambda item: (item[0], item[1]))
-
-            for _, _, lang_label, logo_url in candidates:
-                logo_img = download_rgba_image(logo_url)
-                if logo_img is not None:
-                    print(f"[Remix TMDB] Logo (lang={lang_label}) trovato per '{query_title}'")
-                    return logo_img
-        except Exception as exc:
-            print(f"[Remix TMDB] Errore su {endpoint_url} per '{query_title}': {exc}")
-
-    print(f"[Remix TMDB] Nessun logo trovato per '{query_title}'")
-    return None
-
-
 def get_anime_logo(
     ep: dict,
     title: str,
@@ -452,7 +425,6 @@ def get_anime_logo(
     fanart_enabled = bool(entry.get("fanart", False))
     custom_url = str(entry.get("url") or "").strip()
 
-    # 1. Override manuale esplicito quando fanart == False e url è valorizzato
     if not fanart_enabled and custom_url:
         logo_img = download_rgba_image(custom_url)
         if logo_img is not None:
@@ -463,7 +435,6 @@ def get_anime_logo(
         logo_cache[cache_key] = None
         return None
 
-    # 2. Fanart.tv
     logo_img = fetch_from_fanart_tv(ep, query_title)
     if logo_img is not None:
         if is_new_entry or not fanart_enabled:
@@ -472,16 +443,6 @@ def get_anime_logo(
         logo_cache[cache_key] = logo_img.copy()
         return logo_img
 
-    # 3. Remix TMDB Data Studio
-    logo_img = fetch_from_remix_tmdb(ep, query_title)
-    if logo_img is not None:
-        if is_new_entry or not fanart_enabled:
-            custom_logos[cache_key] = {"fanart": True, "url": custom_url}
-            custom_logos_dirty[0] = True
-        logo_cache[cache_key] = logo_img.copy()
-        return logo_img
-
-    # 4. Nessun logo trovato: registra voce con fanart=false per eventuale URL manuale
     if is_new_entry:
         custom_logos[cache_key] = {"fanart": False, "url": custom_url}
         custom_logos_dirty[0] = True
@@ -493,23 +454,29 @@ def get_anime_logo(
 
 def format_caption(ep: dict) -> str:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
-    raw_ep = str(ep.get("episode") or "").strip()
+    ep_label, end_ep_num, is_range = parse_episode_range(ep)
 
-    ep_num = re.sub(r"^\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
-    ep_part = f"Episodio {ep_num}" if ep_num else "Nuovo episodio"
+    if ep_label:
+        ep_part = f"Episodi {ep_label}" if is_range else f"Episodio {ep_label}"
+    else:
+        ep_part = "Nuovo episodio"
+
     tag_part = "ITA HD" if is_dub_ita(raw_title) else "SUB ITA HD"
+    final_suffix = " (FINE)" if is_final_episode(ep, end_ep_num) else ""
 
     clean_title = html.escape(raw_title)
     clean_ep_part = html.escape(ep_part)
     clean_tag_part = html.escape(tag_part)
 
-    return f"✅ Disponibile 「{clean_title}」 - {clean_ep_part} {clean_tag_part}"
+    return f"✅ Disponibile 「{clean_title}」 - {clean_ep_part} {clean_tag_part}{final_suffix}"
 
 
 def build_reply_markup(ep: dict) -> dict:
-    raw_ep = str(ep.get("episode") or "").strip()
-    ep_num = re.sub(r"^\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
-    ep_btn_label = f"Ep. {ep_num} Streaming & Download" if ep_num else "Streaming & Download"
+    ep_label, _, is_range = parse_episode_range(ep)
+    if ep_label:
+        ep_btn_label = f"Ep. {ep_label} Streaming & Download"
+    else:
+        ep_btn_label = "Streaming & Download"
 
     episode_url = build_episode_url(ep)
     rows = [
@@ -904,7 +871,7 @@ def notify_missing_custom_logos(
             continue
 
         mid = send_dm_text(
-            f"🖼️ Nessun logo trovato su Fanart.tv o Remix TMDB per <b>{html.escape(key)}</b>.\n"
+            f"🖼️ Nessun logo trovato su Fanart.tv per <b>{html.escape(key)}</b>.\n"
             f"Rispondi a questo messaggio con l'URL diretto, oppure scrivi <code>{html.escape(key)}: URL</code>."
         )
         requested_set.add(key)
