@@ -1,5 +1,37 @@
 {
   "last_update_id": 0,
-  "requested_keys": [],
-  "pending_queue": []
+  "requested_keys": [
+    "booty royale: never go down without a fight!",
+    "devils' crest",
+    "getting shots on a frying pan",
+    "living it up in another world until i get bored",
+    "the all-devouring whale: homecoming"
+  ],
+  "pending_queue": [
+    {
+      "key": "booty royale: never go down without a fight!",
+      "title": "booty royale: never go down without a fight!",
+      "message_id": 44
+    },
+    {
+      "key": "devils' crest",
+      "title": "devils' crest",
+      "message_id": 45
+    },
+    {
+      "key": "getting shots on a frying pan",
+      "title": "getting shots on a frying pan",
+      "message_id": 46
+    },
+    {
+      "key": "living it up in another world until i get bored",
+      "title": "living it up in another world until i get bored",
+      "message_id": 47
+    },
+    {
+      "key": "the all-devouring whale: homecoming",
+      "title": "the all-devouring whale: homecoming",
+      "message_id": 48
+    }
+  ]
 }
