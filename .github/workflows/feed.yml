@@ -36,8 +36,6 @@ jobs:
           MEDIA_BASE_URL: ${{ vars.MEDIA_BASE_URL || 'https://animeori.ai.studio' }}
           TELEGRAM_GROUP_URL: ${{ secrets.TELEGRAM_GROUP_URL }}
           FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
-          REMIX_TMDB_BASE_URL: ${{ vars.REMIX_TMDB_BASE_URL || 'https://remix-tmdb-data-studio-4904.ai.studio' }}
-          REMIX_TMDB_API_KEY: ${{ secrets.REMIX_TMDB_API_KEY }}
         run: python feed_bot.py
 
       - name: Commit updated state files
