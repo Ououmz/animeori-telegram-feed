@@ -1,5 +1,13 @@
 {
   "last_update_id": 0,
-  "requested_keys": [],
-  "pending_queue": []
+  "requested_keys": [
+    "paw & palaces"
+  ],
+  "pending_queue": [
+    {
+      "key": "paw & palaces",
+      "title": "paw & palaces",
+      "message_id": 38
+    }
+  ]
 }
