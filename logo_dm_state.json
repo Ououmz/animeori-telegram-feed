@@ -1,5 +1,13 @@
 {
   "last_update_id": 669139728,
-  "requested_keys": [],
-  "pending_queue": []
+  "requested_keys": [
+    "super cube"
+  ],
+  "pending_queue": [
+    {
+      "key": "super cube",
+      "title": "super cube",
+      "message_id": 30
+    }
+  ]
 }
