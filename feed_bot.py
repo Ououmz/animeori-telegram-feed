@@ -947,6 +947,20 @@ def main() -> None:
             new_sent += 1
             time.sleep(1.5)
 
+    preview_items: list = []
+    if isinstance(payload, dict):
+        for extra_key in ("upcoming", "recentAdditions", "recent_additions", "calendar"):
+            extra_val = payload.get(extra_key)
+            if isinstance(extra_val, list):
+                preview_items.extend(extra_val)
+
+    for item in preview_items:
+        if not isinstance(item, dict):
+            continue
+        preview_title = str(item.get("title") or "").strip()
+        if preview_title:
+            get_anime_logo(item, preview_title, logo_cache, custom_logos, custom_logos_dirty)
+
     notify_missing_custom_logos(dm_state, custom_logos, dm_state_dirty)
 
     if custom_logos_dirty[0]:
