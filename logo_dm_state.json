@@ -1,34 +1,5 @@
 {
-  "last_update_id": 669139727,
-  "requested_keys": [
-    "a will eternal final season",
-    "battle spirits [re] zekkai no ku",
-    "i'm dating a dark summoner",
-    "my girlfriend's friend",
-    "red river",
-    "suikoden: the anime",
-    "the lonely snow widow and the cursed ring"
-  ],
-  "pending_queue": [
-    {
-      "key": "i'm dating a dark summoner",
-      "title": "i'm dating a dark summoner",
-      "message_id": 11
-    },
-    {
-      "key": "my girlfriend's friend",
-      "title": "my girlfriend's friend",
-      "message_id": 12
-    },
-    {
-      "key": "the lonely snow widow and the cursed ring",
-      "title": "the lonely snow widow and the cursed ring",
-      "message_id": 13
-    },
-    {
-      "key": "battle spirits [re] zekkai no ku",
-      "title": "battle spirits [re] zekkai no ku",
-      "message_id": 14
-    }
-  ]
+  "last_update_id": 0,
+  "requested_keys": [],
+  "pending_queue": []
 }
