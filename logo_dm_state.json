@@ -1,5 +1,31 @@
 {
   "last_update_id": 0,
-  "requested_keys": [],
-  "pending_queue": []
+  "requested_keys": [
+    "battle spirits [re] zekkai no ku",
+    "i'm dating a dark summoner",
+    "my girlfriend's friend",
+    "the lonely snow widow and the cursed ring"
+  ],
+  "pending_queue": [
+    {
+      "key": "battle spirits [re] zekkai no ku",
+      "title": "battle spirits [re] zekkai no ku",
+      "message_id": 23
+    },
+    {
+      "key": "i'm dating a dark summoner",
+      "title": "i'm dating a dark summoner",
+      "message_id": 24
+    },
+    {
+      "key": "my girlfriend's friend",
+      "title": "my girlfriend's friend",
+      "message_id": 25
+    },
+    {
+      "key": "the lonely snow widow and the cursed ring",
+      "title": "the lonely snow widow and the cursed ring",
+      "message_id": 26
+    }
+  ]
 }
