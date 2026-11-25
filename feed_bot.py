@@ -1,4 +1,3 @@
-from datetime import datetime
 import html
 from io import BytesIO
 import json
@@ -27,7 +26,6 @@ HEADERS = {
     )
 }
 
-DATE_KEYS = ("publishedAt", "published_at", "createdAt", "created_at", "date", "timestamp")
 URL_REGEX = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)
 KEY_URL_LINE_REGEX = re.compile(r"^([^:\n]+?)\s*:\s*(https?://\S+)?\s*$", flags=re.IGNORECASE)
 
@@ -140,42 +138,8 @@ def save_dm_state(dm_state: dict) -> None:
         json.dump(clean_state, f, indent=2, ensure_ascii=False)
 
 
-def parse_timestamp(ep: dict) -> float | None:
-    for key in DATE_KEYS:
-        val = ep.get(key)
-        if val is None or val == "":
-            continue
-        if isinstance(val, (int, float)):
-            ts = float(val)
-            return ts / 1000.0 if ts > 1e12 else ts
-        if isinstance(val, str):
-            s = val.strip()
-            try:
-                num = float(s)
-                return num / 1000.0 if num > 1e12 else num
-            except ValueError:
-                pass
-            try:
-                if s.endswith("Z"):
-                    s = s[:-1] + "+00:00"
-                return datetime.fromisoformat(s).timestamp()
-            except ValueError:
-                continue
-    return None
-
-
 def order_episodes_chronologically(episodes: list) -> list[dict]:
     valid = [ep for ep in episodes if isinstance(ep, dict)]
-    timestamps = [parse_timestamp(ep) for ep in valid]
-
-    if any(ts is not None for ts in timestamps):
-        indexed_with_ts = [
-            (ts if ts is not None else float("inf"), idx, ep)
-            for idx, (ts, ep) in enumerate(zip(timestamps, valid))
-        ]
-        indexed_with_ts.sort(key=lambda item: (item[0], item[1]))
-        return [item[2] for item in indexed_with_ts]
-
     return list(reversed(valid))
 
 
@@ -237,12 +201,6 @@ def _extract_int(val: object) -> int | None:
 
 
 def parse_episode_range(ep: dict) -> tuple[str, int | None, bool]:
-    """
-    Restituisce:
-    - label_num: es. '5' oppure '154-170'
-    - end_ep_num: numero finale dell'uscita (se determinabile)
-    - is_range: True se sono usciti più episodi nello stesso momento
-    """
     raw_ep = str(ep.get("episode") or "").strip()
     cleaned_ep = re.sub(r"^\s*episodi?\s*[:\-]?\s*|\s*ep\.?\s*", "", raw_ep, flags=re.IGNORECASE).strip()
 
@@ -472,7 +430,7 @@ def format_caption(ep: dict) -> str:
 
 
 def build_reply_markup(ep: dict) -> dict:
-    ep_label, _, is_range = parse_episode_range(ep)
+    ep_label, _, _ = parse_episode_range(ep)
     if ep_label:
         ep_btn_label = f"Ep. {ep_label} Streaming & Download"
     else:
