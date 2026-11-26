@@ -259,49 +259,55 @@ def _truthy_flag(val: object) -> bool:
     return False
 
 
-def extract_extra_tags(ep: dict, raw_title: str) -> list[str]:
-    type_parts: list[str] = []
-    for k in ("type", "format", "category", "kind", "mediaType", "media_type", "animeType", "anime_type"):
-        v = ep.get(k)
-        if isinstance(v, str) and v.strip():
-            type_parts.append(v.strip().lower())
+def _extract_anime_type(ep: dict) -> str:
+    containers: list[dict] = [ep]
+    for sub_key in ("show", "series", "anime", "meta", "metadata"):
+        sub_val = ep.get(sub_key)
+        if isinstance(sub_val, dict):
+            containers.append(sub_val)
 
-    for list_k in ("tags", "badges", "flags"):
-        lv = ep.get(list_k)
-        if isinstance(lv, list):
-            for item in lv:
-                if isinstance(item, str) and item.strip():
-                    type_parts.append(item.strip().lower())
+    type_keys = ("animeType", "anime_type", "type", "mediaType", "media_type", "format")
+    for box in containers:
+        for key in type_keys:
+            val = box.get(key)
+            if isinstance(val, str) and val.strip():
+                normalized = val.strip().lower()
+                if normalized in ("tv", "ova", "ona", "special", "movie"):
+                    return normalized
+    return ""
 
-    type_blob = " | ".join(type_parts)
-    text_blob = f"{raw_title} | {ep.get('episode') or ''}".lower()
 
-    is_tv = bool(re.search(r"\btv\b", type_blob))
-    is_ona = bool(re.search(r"\bona\b", type_blob)) or bool(re.search(r"\bona\b", text_blob))
-    is_ova = bool(re.search(r"\bova\b", type_blob)) or bool(re.search(r"\bova\b", text_blob))
-    is_special = bool(re.search(r"\bspecial\b|\bspeciale\b", type_blob)) or bool(
-        re.search(r"\bspecial\b|\bspeciale\b", text_blob)
-    )
-    is_movie = bool(re.search(r"\bmovie\b|\bfilm\b", type_blob)) or bool(
-        re.search(r"\bmovie\b|\bfilm\b", text_blob)
-    )
+def _is_first_release_of_series(ep: dict) -> bool:
+    for flag_key in ("isNewSeries", "is_new_series", "newSeries", "new_series", "isFirstEpisode", "is_first_episode"):
+        if _truthy_flag(ep.get(flag_key)):
+            return True
 
-    explicit_new_series = any(
-        _truthy_flag(ep.get(k))
-        for k in ("isNewSeries", "is_new_series", "newSeries", "new_series", "isNew", "is_new")
-    ) or bool(re.search(r"\bnuova\s+serie\b|\bnew\s+series\b", f"{type_blob} | {text_blob}"))
+    start_val = _extract_int(ep.get("episodeStart") if ep.get("episodeStart") is not None else ep.get("episode_start"))
+    if start_val == 1:
+        return True
 
-    has_new_series = explicit_new_series and (is_tv or is_ona or not type_blob)
+    ep_label, _, _ = parse_episode_range(ep)
+    if ep_label:
+        first_num = _extract_int(ep_label.split("-")[0])
+        if first_num == 1:
+            return True
 
+    return False
+
+
+def extract_extra_tags(ep: dict) -> list[str]:
+    anime_type = _extract_anime_type(ep)
     tags: list[str] = []
-    if has_new_series:
+
+    if anime_type in ("tv", "ona") and _is_first_release_of_series(ep):
         tags.append("<b>(Nuova Serie)</b>")
-    if is_movie:
+    elif anime_type == "movie" or _truthy_flag(ep.get("isMovie") if ep.get("isMovie") is not None else ep.get("is_movie")):
         tags.append("<b>(Nuovo Movie)</b>")
-    if is_special:
+    elif anime_type == "special" or _truthy_flag(ep.get("isSpecial") if ep.get("isSpecial") is not None else ep.get("is_special")):
         tags.append("<b>(Nuovo Special)</b>")
-    if is_ova:
+    elif anime_type == "ova" or _truthy_flag(ep.get("isOva") if ep.get("isOva") is not None else ep.get("is_ova")):
         tags.append("<b>(Nuovo OVA)</b>")
+
     return tags
 
 
@@ -477,7 +483,7 @@ def format_caption(ep: dict) -> str:
     suffixes: list[str] = []
     if is_final_episode(ep, end_ep_num):
         suffixes.append("<b>(FINE)</b>")
-    suffixes.extend(extract_extra_tags(ep, raw_title))
+    suffixes.extend(extract_extra_tags(ep))
     suffix_str = (" " + " ".join(suffixes)) if suffixes else ""
 
     clean_title = html.escape(raw_title)
