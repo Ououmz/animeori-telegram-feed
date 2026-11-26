@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 import requests
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -586,11 +586,55 @@ def extract_palette(src_img: Image.Image) -> tuple[tuple[int, int, int], tuple[i
     return dominant_rgb, accent_rgb, use_light_theme
 
 
+def extract_logo_colors(logo_img: Image.Image | None, fallback_rgb: tuple[int, int, int]) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    if logo_img is None:
+        return fallback_rgb, fallback_rgb
+
+    rgba = logo_img.convert("RGBA").resize((120, 64), Image.Resampling.BILINEAR)
+    px = rgba.getdata()
+    samples: list[tuple[float, tuple[int, int, int]]] = []
+
+    for r, g, b, a in px:
+        if a < 45:
+            continue
+        max_c = max(r, g, b)
+        min_c = min(r, g, b)
+        sat = (max_c - min_c) / float(max(1, max_c))
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        if 25 <= luma <= 245:
+            score = sat * 1.5 + (a / 255.0) * 0.4
+            samples.append((score, (r, g, b)))
+
+    if not samples:
+        return fallback_rgb, fallback_rgb
+
+    samples.sort(key=lambda item: item[0], reverse=True)
+    primary = samples[0][1]
+    secondary = primary
+
+    for _, rgb in samples[1:]:
+        dist = ((rgb[0] - primary[0]) ** 2 + (rgb[1] - primary[1]) ** 2 + (rgb[2] - primary[2]) ** 2) ** 0.5
+        if dist >= 45.0:
+            secondary = rgb
+            break
+
+    def boost(c: tuple[int, int, int]) -> tuple[int, int, int]:
+        m = max(c)
+        if m < 115:
+            s = 160.0 / float(max(1, m))
+            return (_clamp_channel(c[0] * s), _clamp_channel(c[1] * s), _clamp_channel(c[2] * s))
+        return c
+
+    return boost(primary), boost(secondary)
+
+
 def build_dynamic_backdrop(
     width: int,
     height: int,
     dominant_rgb: tuple[int, int, int],
     accent_rgb: tuple[int, int, int],
+    logo_primary_rgb: tuple[int, int, int],
+    logo_secondary_rgb: tuple[int, int, int],
     light_theme: bool,
     seed: int,
 ) -> Image.Image:
@@ -601,15 +645,15 @@ def build_dynamic_backdrop(
             _clamp_channel(246 + (dominant_rgb[2] - 200) * 0.12),
         )
         base_bot = (
-            _clamp_channel(214 + (accent_rgb[0] - 128) * 0.18),
-            _clamp_channel(218 + (accent_rgb[1] - 128) * 0.18),
-            _clamp_channel(228 + (accent_rgb[2] - 128) * 0.18),
+            _clamp_channel(214 + (logo_primary_rgb[0] - 128) * 0.18),
+            _clamp_channel(218 + (logo_primary_rgb[1] - 128) * 0.18),
+            _clamp_channel(228 + (logo_primary_rgb[2] - 128) * 0.18),
         )
     else:
         base_top = (
-            _clamp_channel(dominant_rgb[0] * 0.28 + 14),
-            _clamp_channel(dominant_rgb[1] * 0.28 + 15),
-            _clamp_channel(dominant_rgb[2] * 0.32 + 22),
+            _clamp_channel(dominant_rgb[0] * 0.26 + 14),
+            _clamp_channel(dominant_rgb[1] * 0.26 + 15),
+            _clamp_channel(dominant_rgb[2] * 0.30 + 22),
         )
         base_bot = (
             _clamp_channel(dominant_rgb[0] * 0.14 + 8),
@@ -626,36 +670,49 @@ def build_dynamic_backdrop(
         b = _clamp_channel(base_top[2] * (1.0 - t) + base_bot[2] * t)
         draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(glow_layer)
-    gx = width - 220 + ((seed % 140) - 70)
-    gy = 120 + (((seed >> 4) % 160) - 80)
-    g_alpha = 44 if light_theme else 62
-    for radius, alpha_mult in ((340, 0.35), (230, 0.65), (140, 1.0)):
-        a = _clamp_channel(g_alpha * alpha_mult)
-        gdraw.ellipse(
-            (gx - radius, gy - radius, gx + radius, gy + radius),
-            fill=(accent_rgb[0], accent_rgb[1], accent_rgb[2], a),
+    # Sfuma cromatica morbida presa dal logo dietro l'area del titolo/logo a destra
+    logo_glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    ldraw = ImageDraw.Draw(logo_glow)
+    center_x = 830 + ((seed % 110) - 55)
+    center_y = 300 + (((seed >> 3) % 90) - 45)
+    base_alpha = 52 if light_theme else 74
+
+    for rad, mult in ((390, 0.28), (275, 0.55), (175, 0.90), (105, 1.0)):
+        a = _clamp_channel(base_alpha * mult)
+        ldraw.ellipse(
+            (center_x - rad, center_y - rad * 0.72, center_x + rad, center_y + rad * 0.72),
+            fill=(logo_primary_rgb[0], logo_primary_rgb[1], logo_primary_rgb[2], a),
         )
-    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=48))
-    backdrop = Image.alpha_composite(backdrop, glow_layer)
+
+    sec_x = center_x + 150
+    sec_y = center_y + (95 if (seed % 2 == 0) else -95)
+    sec_alpha = 38 if light_theme else 54
+    for rad, mult in ((280, 0.35), (170, 0.75), (95, 1.0)):
+        a = _clamp_channel(sec_alpha * mult)
+        ldraw.ellipse(
+            (sec_x - rad, sec_y - rad * 0.75, sec_x + rad, sec_y + rad * 0.75),
+            fill=(logo_secondary_rgb[0], logo_secondary_rgb[1], logo_secondary_rgb[2], a),
+        )
+
+    logo_glow = logo_glow.filter(ImageFilter.GaussianBlur(radius=56))
+    backdrop = Image.alpha_composite(backdrop, logo_glow)
 
     accent_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     adraw = ImageDraw.Draw(accent_layer)
-    stripe_alpha = 42 if light_theme else 54
-    offset_y = ((seed >> 8) % 120) - 60
+    stripe_alpha = 36 if light_theme else 48
+    offset_y = ((seed >> 8) % 100) - 50
     adraw.polygon(
         [
             (460, height),
-            (620, height),
-            (width + 80, 190 + offset_y),
-            (width + 80, 255 + offset_y),
+            (610, height),
+            (width + 80, 195 + offset_y),
+            (width + 80, 250 + offset_y),
         ],
-        fill=(accent_rgb[0], accent_rgb[1], accent_rgb[2], stripe_alpha),
+        fill=(logo_primary_rgb[0], logo_primary_rgb[1], logo_primary_rgb[2], stripe_alpha),
     )
     adraw.line(
         [(485, height - 34), (width - 42, 34)],
-        fill=(accent_rgb[0], accent_rgb[1], accent_rgb[2], 95 if light_theme else 115),
+        fill=(accent_rgb[0], accent_rgb[1], accent_rgb[2], 85 if light_theme else 105),
         width=2,
     )
     return Image.alpha_composite(backdrop, accent_layer)
@@ -716,65 +773,6 @@ def draw_poster_card(
     return canvas_rgba
 
 
-def draw_cover_sticker(
-    canvas_rgba: Image.Image,
-    src_img: Image.Image,
-    accent_rgb: tuple[int, int, int],
-    light_theme: bool,
-    seed: int,
-) -> Image.Image:
-    width, height = canvas_rgba.size
-    w_src, h_src = src_img.size
-
-    crop_size = max(64, int(min(w_src, h_src) * 0.34))
-    anchors = [
-        (int(w_src * 0.50), int(h_src * 0.08)),
-        (int(w_src * 0.12), int(h_src * 0.10)),
-        (int(w_src * 0.52), int(h_src * 0.52)),
-        (int(w_src * 0.15), int(h_src * 0.55)),
-    ]
-    ax, ay = anchors[seed % len(anchors)]
-    x0 = max(0, min(w_src - crop_size, ax))
-    y0 = max(0, min(h_src - crop_size, ay))
-    crop = src_img.crop((x0, y0, x0 + crop_size, y0 + crop_size)).convert("RGB")
-
-    sticker_size = 112
-    sticker_art = ImageOps.fit(crop, (sticker_size, sticker_size), method=Image.Resampling.LANCZOS).convert("RGBA")
-
-    pad = 8
-    total_w = sticker_size + pad * 2
-    total_h = sticker_size + pad * 2
-    sticker_card = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
-    sc_draw = ImageDraw.Draw(sticker_card)
-    frame_color = (255, 255, 255, 245) if not light_theme else (24, 26, 36, 235)
-    sc_draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=18, fill=frame_color)
-
-    art_mask = _rounded_mask((sticker_size, sticker_size), radius=12)
-    sticker_art.putalpha(art_mask)
-    sticker_card.alpha_composite(sticker_art, dest=(pad, pad))
-
-    sc_draw.rounded_rectangle(
-        [(0, 0), (total_w - 1, total_h - 1)],
-        radius=18,
-        outline=(accent_rgb[0], accent_rgb[1], accent_rgb[2], 210),
-        width=2,
-    )
-
-    angle = -8.0 if (seed % 2 == 0) else 7.0
-    rotated = sticker_card.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
-
-    drop_shadow = Image.new("RGBA", rotated.size, (0, 0, 0, 0))
-    alpha_ch = rotated.split()[3].point(lambda a: int(a * 0.42))
-    drop_shadow.putalpha(alpha_ch)
-    drop_shadow = drop_shadow.filter(ImageFilter.GaussianBlur(radius=6))
-
-    sx = width - rotated.width - 34
-    sy = height - rotated.height - 26
-    canvas_rgba.alpha_composite(drop_shadow, dest=(sx + 3, sy + 5))
-    canvas_rgba.alpha_composite(rotated, dest=(sx, sy))
-    return canvas_rgba
-
-
 def draw_logo_or_title(
     canvas_rgba: Image.Image,
     title: str,
@@ -788,7 +786,7 @@ def draw_logo_or_title(
 
     if logo_img is not None:
         max_w = right_width
-        max_h = int(height * 0.60)
+        max_h = int(height * 0.62)
         fitted_logo = ImageOps.contain(logo_img, (max_w, max_h), method=Image.Resampling.LANCZOS).convert("RGBA")
 
         lx = right_x0 + (right_width - fitted_logo.width) // 2
@@ -856,13 +854,20 @@ def build_banner_image(
         seed = _seed_from_title(clean_title_for_logo(title) or title)
 
         dominant_rgb, accent_rgb, light_theme = extract_palette(src_img)
-        canvas_rgba = build_dynamic_backdrop(width, height, dominant_rgb, accent_rgb, light_theme, seed)
-        canvas_rgba = draw_poster_card(canvas_rgba, src_img, accent_rgb, seed)
-
-        if (seed % 4) != 0:
-            canvas_rgba = draw_cover_sticker(canvas_rgba, src_img, accent_rgb, light_theme, seed)
-
         logo_img = get_anime_logo(ep, title, logo_cache, custom_logos, custom_logos_dirty)
+        logo_primary_rgb, logo_secondary_rgb = extract_logo_colors(logo_img, accent_rgb)
+
+        canvas_rgba = build_dynamic_backdrop(
+            width,
+            height,
+            dominant_rgb,
+            accent_rgb,
+            logo_primary_rgb,
+            logo_secondary_rgb,
+            light_theme,
+            seed,
+        )
+        canvas_rgba = draw_poster_card(canvas_rgba, src_img, accent_rgb, seed)
         canvas_rgba = draw_logo_or_title(canvas_rgba, title, left_w=left_w, logo_img=logo_img, light_theme=light_theme)
 
         canvas = canvas_rgba.convert("RGB")
