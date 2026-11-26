@@ -481,9 +481,9 @@ def format_caption(ep: dict) -> str:
 
     tag_part = "ITA HD" if is_dub_ita(raw_title) else "SUB ITA HD"
     suffixes: list[str] = []
+    suffixes.extend(extract_extra_tags(ep))
     if is_final_episode(ep, end_ep_num):
         suffixes.append("<b>(FINE)</b>")
-    suffixes.extend(extract_extra_tags(ep))
     suffix_str = (" " + " ".join(suffixes)) if suffixes else ""
 
     clean_title = html.escape(raw_title)
