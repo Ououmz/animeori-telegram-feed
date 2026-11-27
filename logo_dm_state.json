@@ -29,6 +29,7 @@
     "mercedes and the waning moon: the dungeoneering feats of a discarded vampire aristocrat",
     "mobile suit gundam: hathaway - the sorcery of nymph circe",
     "mononoke the movie: chapter iii - the curse of the serpent",
+    "monster strike: mera×death - shinigami to boku no ijou na koi",
     "moon mask rider",
     "multi-mind mayhem",
     "murciélago",
@@ -327,6 +328,11 @@
       "key": "zombie no afureta sekai de ore dake ga osowarenai",
       "title": "zombie no afureta sekai de ore dake ga osowarenai",
       "message_id": 418
+    },
+    {
+      "key": "monster strike: mera×death - shinigami to boku no ijou na koi",
+      "title": "monster strike: mera×death - shinigami to boku no ijou na koi",
+      "message_id": 421
     }
   ]
 }
