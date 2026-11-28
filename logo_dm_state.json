@@ -1,1 +1,331 @@
-{}
+{
+  "last_update_id": 0,
+  "requested_keys": [
+    "code geass: akito the exiled - the wyvern arrives",
+    "code geass: akito the exiled - the wyvern divided",
+    "code geass: akito the exiled - to beloved ones",
+    "code geass: lelouch of the rebellion - nunnally in wonderland",
+    "continuavano a chiamarlo il gatto con gli stivali",
+    "darker than black: kuro no keiyakusha - sakura no hana no mankai no shita",
+    "dengeki daisy",
+    "detective conan: the counterfeit case of ultra 30",
+    "disney twisted-wonderland the animation: episode of savanaclaw",
+    "fairy tail movie 1: houou no miko - hajimari no asa",
+    "gacha girls corps",
+    "ghost meets gal!",
+    "il gatto con gli stivali in giro per il mondo",
+    "inherit the winds",
+    "io sono teppei!",
+    "kaiju no. 8: narumi's week at work",
+    "kuroko no basket movie 1: winter cup - kage to hikari",
+    "kuroko no basket movie 2: winter cup - namida no saki e",
+    "kuroko no basket movie 3: winter cup - tobira no mukou",
+    "love live! hasunosora jogakuin school idol club",
+    "magical buffs: the support caster is stronger than he realized!",
+    "maken-ki! secret training",
+    "me and older brother yu",
+    "mercedes and the waning moon: the dungeoneering feats of a discarded vampire aristocrat",
+    "mobile suit gundam: hathaway - the sorcery of nymph circe",
+    "mononoke the movie: chapter iii - the curse of the serpent",
+    "monster strike: mera×death - shinigami to boku no ijou na koi",
+    "moon mask rider",
+    "multi-mind mayhem",
+    "murciélago",
+    "my sword saint master is too cute to live with!",
+    "ojisan and marshmallow episode 13: hige-san and marshmallow",
+    "panda! go panda!",
+    "puella magi yotsugi☆peace",
+    "red riding hood: a detective story",
+    "reincarnation in the game world dankatsu: game addict plays \"encouragement for job hunting in dungeons\" from a \"new game\"",
+    "seeing double",
+    "shin no seijo de aru watashi wa tsuihou saremashita. dakara kono kuni wa mou owari desu",
+    "shin oishinbo",
+    "si alza il vento",
+    "spirit circle",
+    "sss-class revival hunter",
+    "the eternal fool's words of wisdom",
+    "the final-boss prince is somehow obsessed with the chubby villainess: reincarnated me",
+    "the fledgling demon lord's starter shop",
+    "the guy she was interested in wasn't a guy at all",
+    "the idolm@ster: 765 pro to iu monogatari",
+    "the kept man of the princess knight",
+    "the reincarnated elf left on a journey to master his magic and with his extra lifespan became a living legend",
+    "toratsugumi: tsugumi project",
+    "wolf's rain ova",
+    "wound & bandage",
+    "your letter",
+    "zombie no afureta sekai de ore dake ga osowarenai"
+  ],
+  "pending_queue": [
+    {
+      "key": "code geass: akito the exiled - the wyvern arrives",
+      "title": "code geass: akito the exiled - the wyvern arrives",
+      "message_id": 422
+    },
+    {
+      "key": "code geass: akito the exiled - the wyvern divided",
+      "title": "code geass: akito the exiled - the wyvern divided",
+      "message_id": 423
+    },
+    {
+      "key": "code geass: akito the exiled - to beloved ones",
+      "title": "code geass: akito the exiled - to beloved ones",
+      "message_id": 424
+    },
+    {
+      "key": "code geass: lelouch of the rebellion - nunnally in wonderland",
+      "title": "code geass: lelouch of the rebellion - nunnally in wonderland",
+      "message_id": 425
+    },
+    {
+      "key": "continuavano a chiamarlo il gatto con gli stivali",
+      "title": "continuavano a chiamarlo il gatto con gli stivali",
+      "message_id": 426
+    },
+    {
+      "key": "darker than black: kuro no keiyakusha - sakura no hana no mankai no shita",
+      "title": "darker than black: kuro no keiyakusha - sakura no hana no mankai no shita",
+      "message_id": 427
+    },
+    {
+      "key": "dengeki daisy",
+      "title": "dengeki daisy",
+      "message_id": 428
+    },
+    {
+      "key": "detective conan: the counterfeit case of ultra 30",
+      "title": "detective conan: the counterfeit case of ultra 30",
+      "message_id": 429
+    },
+    {
+      "key": "disney twisted-wonderland the animation: episode of savanaclaw",
+      "title": "disney twisted-wonderland the animation: episode of savanaclaw",
+      "message_id": 430
+    },
+    {
+      "key": "fairy tail movie 1: houou no miko - hajimari no asa",
+      "title": "fairy tail movie 1: houou no miko - hajimari no asa",
+      "message_id": 431
+    },
+    {
+      "key": "gacha girls corps",
+      "title": "gacha girls corps",
+      "message_id": 432
+    },
+    {
+      "key": "ghost meets gal!",
+      "title": "ghost meets gal!",
+      "message_id": 433
+    },
+    {
+      "key": "il gatto con gli stivali in giro per il mondo",
+      "title": "il gatto con gli stivali in giro per il mondo",
+      "message_id": 434
+    },
+    {
+      "key": "inherit the winds",
+      "title": "inherit the winds",
+      "message_id": 435
+    },
+    {
+      "key": "io sono teppei!",
+      "title": "io sono teppei!",
+      "message_id": 436
+    },
+    {
+      "key": "kaiju no. 8: narumi's week at work",
+      "title": "kaiju no. 8: narumi's week at work",
+      "message_id": 437
+    },
+    {
+      "key": "kuroko no basket movie 1: winter cup - kage to hikari",
+      "title": "kuroko no basket movie 1: winter cup - kage to hikari",
+      "message_id": 438
+    },
+    {
+      "key": "kuroko no basket movie 2: winter cup - namida no saki e",
+      "title": "kuroko no basket movie 2: winter cup - namida no saki e",
+      "message_id": 439
+    },
+    {
+      "key": "kuroko no basket movie 3: winter cup - tobira no mukou",
+      "title": "kuroko no basket movie 3: winter cup - tobira no mukou",
+      "message_id": 440
+    },
+    {
+      "key": "love live! hasunosora jogakuin school idol club",
+      "title": "love live! hasunosora jogakuin school idol club",
+      "message_id": 441
+    },
+    {
+      "key": "magical buffs: the support caster is stronger than he realized!",
+      "title": "magical buffs: the support caster is stronger than he realized!",
+      "message_id": 442
+    },
+    {
+      "key": "maken-ki! secret training",
+      "title": "maken-ki! secret training",
+      "message_id": 443
+    },
+    {
+      "key": "me and older brother yu",
+      "title": "me and older brother yu",
+      "message_id": 444
+    },
+    {
+      "key": "mercedes and the waning moon: the dungeoneering feats of a discarded vampire aristocrat",
+      "title": "mercedes and the waning moon: the dungeoneering feats of a discarded vampire aristocrat",
+      "message_id": 445
+    },
+    {
+      "key": "mobile suit gundam: hathaway - the sorcery of nymph circe",
+      "title": "mobile suit gundam: hathaway - the sorcery of nymph circe",
+      "message_id": 446
+    },
+    {
+      "key": "mononoke the movie: chapter iii - the curse of the serpent",
+      "title": "mononoke the movie: chapter iii - the curse of the serpent",
+      "message_id": 447
+    },
+    {
+      "key": "monster strike: mera×death - shinigami to boku no ijou na koi",
+      "title": "monster strike: mera×death - shinigami to boku no ijou na koi",
+      "message_id": 448
+    },
+    {
+      "key": "moon mask rider",
+      "title": "moon mask rider",
+      "message_id": 449
+    },
+    {
+      "key": "multi-mind mayhem",
+      "title": "multi-mind mayhem",
+      "message_id": 450
+    },
+    {
+      "key": "murciélago",
+      "title": "murciélago",
+      "message_id": 451
+    },
+    {
+      "key": "my sword saint master is too cute to live with!",
+      "title": "my sword saint master is too cute to live with!",
+      "message_id": 452
+    },
+    {
+      "key": "ojisan and marshmallow episode 13: hige-san and marshmallow",
+      "title": "ojisan and marshmallow episode 13: hige-san and marshmallow",
+      "message_id": 453
+    },
+    {
+      "key": "panda! go panda!",
+      "title": "panda! go panda!",
+      "message_id": 454
+    },
+    {
+      "key": "puella magi yotsugi☆peace",
+      "title": "puella magi yotsugi☆peace",
+      "message_id": 455
+    },
+    {
+      "key": "red riding hood: a detective story",
+      "title": "red riding hood: a detective story",
+      "message_id": 456
+    },
+    {
+      "key": "reincarnation in the game world dankatsu: game addict plays \"encouragement for job hunting in dungeons\" from a \"new game\"",
+      "title": "reincarnation in the game world dankatsu: game addict plays \"encouragement for job hunting in dungeons\" from a \"new game\"",
+      "message_id": 457
+    },
+    {
+      "key": "seeing double",
+      "title": "seeing double",
+      "message_id": 458
+    },
+    {
+      "key": "shin no seijo de aru watashi wa tsuihou saremashita. dakara kono kuni wa mou owari desu",
+      "title": "shin no seijo de aru watashi wa tsuihou saremashita. dakara kono kuni wa mou owari desu",
+      "message_id": 459
+    },
+    {
+      "key": "shin oishinbo",
+      "title": "shin oishinbo",
+      "message_id": 460
+    },
+    {
+      "key": "si alza il vento",
+      "title": "si alza il vento",
+      "message_id": 461
+    },
+    {
+      "key": "spirit circle",
+      "title": "spirit circle",
+      "message_id": 462
+    },
+    {
+      "key": "sss-class revival hunter",
+      "title": "sss-class revival hunter",
+      "message_id": 463
+    },
+    {
+      "key": "the eternal fool's words of wisdom",
+      "title": "the eternal fool's words of wisdom",
+      "message_id": 464
+    },
+    {
+      "key": "the final-boss prince is somehow obsessed with the chubby villainess: reincarnated me",
+      "title": "the final-boss prince is somehow obsessed with the chubby villainess: reincarnated me",
+      "message_id": 465
+    },
+    {
+      "key": "the fledgling demon lord's starter shop",
+      "title": "the fledgling demon lord's starter shop",
+      "message_id": 466
+    },
+    {
+      "key": "the guy she was interested in wasn't a guy at all",
+      "title": "the guy she was interested in wasn't a guy at all",
+      "message_id": 467
+    },
+    {
+      "key": "the idolm@ster: 765 pro to iu monogatari",
+      "title": "the idolm@ster: 765 pro to iu monogatari",
+      "message_id": 468
+    },
+    {
+      "key": "the kept man of the princess knight",
+      "title": "the kept man of the princess knight",
+      "message_id": 469
+    },
+    {
+      "key": "the reincarnated elf left on a journey to master his magic and with his extra lifespan became a living legend",
+      "title": "the reincarnated elf left on a journey to master his magic and with his extra lifespan became a living legend",
+      "message_id": 470
+    },
+    {
+      "key": "toratsugumi: tsugumi project",
+      "title": "toratsugumi: tsugumi project",
+      "message_id": 471
+    },
+    {
+      "key": "wolf's rain ova",
+      "title": "wolf's rain ova",
+      "message_id": 472
+    },
+    {
+      "key": "wound & bandage",
+      "title": "wound & bandage",
+      "message_id": 473
+    },
+    {
+      "key": "your letter",
+      "title": "your letter",
+      "message_id": 474
+    },
+    {
+      "key": "zombie no afureta sekai de ore dake ga osowarenai",
+      "title": "zombie no afureta sekai de ore dake ga osowarenai",
+      "message_id": 475
+    }
+  ]
+}
