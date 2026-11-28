@@ -1270,7 +1270,7 @@ def edit_telegram_banner(
     return False
 
 
-def refresh_existing_messages_for_updated_logos(
+def refresh_existing_messages(
     episodes: list[dict],
     sent_messages: dict[str, dict],
     sent_messages_dirty: list[bool],
@@ -1279,7 +1279,7 @@ def refresh_existing_messages_for_updated_logos(
     custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
 ) -> None:
-    if not updated_logo_keys or not sent_messages:
+    if not sent_messages:
         return
 
     ep_by_id: dict[str, dict] = {}
@@ -1292,27 +1292,39 @@ def refresh_existing_messages_for_updated_logos(
     for ep_id, info in sent_messages.items():
         if not info.get("has_banner"):
             continue
-        msg_logo_key = str(info.get("logo_key") or "").strip().lower()
-        if msg_logo_key not in updated_logo_keys:
-            continue
 
         ep = ep_by_id.get(ep_id)
         if not ep:
             continue
 
-        photo_url = build_image_url(ep) or str(info.get("photo_url") or "").strip()
+        msg_logo_key = str(info.get("logo_key") or "").strip().lower()
+        prev_photo_url = str(info.get("photo_url") or "").strip()
+        new_photo_url = build_image_url(ep)
+
+        logo_changed = bool(updated_logo_keys and msg_logo_key in updated_logo_keys)
+        cover_changed = bool(new_photo_url and new_photo_url != prev_photo_url)
+
+        if not logo_changed and not cover_changed:
+            continue
+
+        effective_photo_url = new_photo_url or prev_photo_url
         raw_title = str(ep.get("title") or msg_logo_key).strip()
         message_id = int(info["message_id"])
 
-        if edit_telegram_banner(message_id, ep, photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty):
-            info["photo_url"] = photo_url
+        if edit_telegram_banner(message_id, ep, effective_photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty):
+            info["photo_url"] = effective_photo_url
             sent_messages_dirty[0] = True
             updated_count += 1
-            print(f"[editMessageMedia] Aggiornata locandina per ep_id={ep_id} (msg={message_id})")
+            reasons = []
+            if logo_changed:
+                reasons.append("logo")
+            if cover_changed:
+                reasons.append("copertina")
+            print(f"[editMessageMedia] Aggiornato ({', '.join(reasons)}) per ep_id={ep_id} (msg={message_id})")
             time.sleep(1.2)
 
     if updated_count > 0:
-        print(f"Aggiornate {updated_count} locandine già inviate.")
+        print(f"Aggiornati {updated_count} messaggi già inviati.")
 
 
 def main() -> None:
@@ -1360,16 +1372,15 @@ def main() -> None:
                 sent_messages_dirty[0] = True
             time.sleep(1.5)
 
-    if updated_logo_keys:
-        refresh_existing_messages_for_updated_logos(
-            [ep for ep in episodes if isinstance(ep, dict)],
-            sent_messages,
-            sent_messages_dirty,
-            updated_logo_keys,
-            logo_cache,
-            custom_logos,
-            custom_logos_dirty,
-        )
+    refresh_existing_messages(
+        [ep for ep in episodes if isinstance(ep, dict)],
+        sent_messages,
+        sent_messages_dirty,
+        updated_logo_keys,
+        logo_cache,
+        custom_logos,
+        custom_logos_dirty,
+    )
 
     preview_items: list = []
     if isinstance(payload, dict):
