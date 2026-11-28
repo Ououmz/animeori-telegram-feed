@@ -19,6 +19,7 @@ FANART_API_KEY = os.environ.get("FANART_API_KEY", "").strip()
 STATE_FILE = "seen_episodes.json"
 CUSTOM_LOGOS_FILE = "custom_logos.json"
 DM_STATE_FILE = "logo_dm_state.json"
+SENT_MESSAGES_FILE = "sent_messages.json"
 
 HEADERS = {
     "User-Agent": (
@@ -42,6 +43,34 @@ def load_seen() -> set[str]:
 def save_seen(seen: set[str]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, indent=2, ensure_ascii=False)
+
+
+def load_sent_messages() -> dict[str, dict]:
+    if not os.path.exists(SENT_MESSAGES_FILE):
+        return {}
+    try:
+        with open(SENT_MESSAGES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            result: dict[str, dict] = {}
+            for ep_id, info in data.items():
+                if isinstance(info, dict) and info.get("message_id") is not None:
+                    result[str(ep_id)] = {
+                        "message_id": int(info["message_id"]),
+                        "logo_key": str(info.get("logo_key") or "").strip().lower(),
+                        "photo_url": str(info.get("photo_url") or "").strip(),
+                        "has_banner": bool(info.get("has_banner", False)),
+                    }
+            return result
+    except Exception as exc:
+        print(f"[sent_messages.json] Errore lettura: {exc}")
+    return {}
+
+
+def save_sent_messages(sent_messages: dict[str, dict]) -> None:
+    ordered = {k: sent_messages[k] for k in sorted(sent_messages.keys())}
+    with open(SENT_MESSAGES_FILE, "w", encoding="utf-8") as f:
+        json.dump(ordered, f, indent=2, ensure_ascii=False)
 
 
 def normalize_custom_entry(val: object) -> dict:
@@ -190,6 +219,10 @@ def clean_title_for_logo(title: str) -> str:
     cleaned = re.sub(r"\bHD\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—|")
     return cleaned or title.strip()
+
+
+def get_logo_key(title: str) -> str:
+    return clean_title_for_logo(title).strip().lower()
 
 
 def _extract_int(val: object) -> int | None:
@@ -670,7 +703,6 @@ def build_dynamic_backdrop(
         b = _clamp_channel(base_top[2] * (1.0 - t) + base_bot[2] * t)
         draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    # Sfuma cromatica morbida presa dal logo dietro l'area del titolo/logo a destra
     logo_glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     ldraw = ImageDraw.Draw(logo_glow)
     center_x = 830 + ((seed % 110) - 55)
@@ -975,6 +1007,7 @@ def process_dm_replies(
     custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
     dm_state_dirty: list[bool],
+    updated_logo_keys: set[str],
 ) -> None:
     if not ADMIN_CHAT_ID:
         return
@@ -1033,6 +1066,7 @@ def process_dm_replies(
 
             for key, logo_url in kv_pairs:
                 custom_logos[key] = {"fanart": False, "url": logo_url}
+                updated_logo_keys.add(key)
                 updated_items.append(f"• <code>{html.escape(key)}</code> → {html.escape(logo_url)}")
                 print(f"[DM] Salvato logo per '{key}' -> {logo_url}")
 
@@ -1065,12 +1099,13 @@ def process_dm_replies(
         title_label = str(target.get("title") or key).strip()
 
         custom_logos[key] = {"fanart": False, "url": logo_url}
+        updated_logo_keys.add(key)
         custom_logos_dirty[0] = True
         dm_state_dirty[0] = True
 
         print(f"[DM] Salvato logo per '{key}' -> {logo_url}")
         send_dm_text(
-            f"✅ Logo salvato per <b>{html.escape(title_label)}</b> (<code>{html.escape(key)}</code>):\n{html.escape(logo_url)}\nVerrà usato dai prossimi episodi dopo il commit.",
+            f"✅ Logo salvato per <b>{html.escape(title_label)}</b> (<code>{html.escape(key)}</code>):\n{html.escape(logo_url)}\nAggiorno le locandine già inviate e lo userò per i prossimi episodi.",
             reply_to_message_id=msg.get("message_id"),
         )
 
@@ -1117,7 +1152,7 @@ def notify_missing_custom_logos(
     dm_state["pending_queue"] = queue
 
 
-def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
+def send_text_message(api_base: str, text: str, reply_markup: dict) -> int | None:
     resp = telegram_post_with_retry(
         f"{api_base}/sendMessage",
         json_payload={
@@ -1132,8 +1167,11 @@ def send_text_message(api_base: str, text: str, reply_markup: dict) -> bool:
         status = resp.status_code if resp is not None else "no-resp"
         detail = resp.text if resp is not None else ""
         print(f"Errore sendMessage Telegram: {status} {detail}")
-        return False
-    return True
+        return None
+    try:
+        return resp.json().get("result", {}).get("message_id")
+    except Exception:
+        return None
 
 
 def send_telegram_item(
@@ -1141,11 +1179,12 @@ def send_telegram_item(
     logo_cache: dict[str, Image.Image | None],
     custom_logos: dict[str, dict],
     custom_logos_dirty: list[bool],
-) -> bool:
+) -> tuple[bool, int | None, str, bool]:
     raw_title = str(ep.get("title") or "Nuovo episodio").strip()
     caption = format_caption(ep)
     reply_markup = build_reply_markup(ep)
     photo_url = build_image_url(ep)
+    logo_key = get_logo_key(raw_title)
     api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
     banner_bytes = build_banner_image(ep, photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty)
@@ -1161,7 +1200,8 @@ def send_telegram_item(
             files={"photo": ("banner.jpg", banner_bytes, "image/jpeg")},
         )
         if resp is not None and resp.ok and resp.json().get("ok", False):
-            return True
+            mid = resp.json().get("result", {}).get("message_id")
+            return True, mid, logo_key, True
         status = resp.status_code if resp is not None else "no-resp"
         detail = resp.text if resp is not None else ""
         print(f"Invio banner non riuscito, provo con URL: {status} {detail}")
@@ -1178,12 +1218,101 @@ def send_telegram_item(
             },
         )
         if resp is not None and resp.ok and resp.json().get("ok", False):
-            return True
+            mid = resp.json().get("result", {}).get("message_id")
+            return True, mid, logo_key, False
         status = resp.status_code if resp is not None else "no-resp"
         detail = resp.text if resp is not None else ""
         print(f"sendPhoto con URL non riuscito, uso sendMessage: {status} {detail}")
 
-    return send_text_message(api_base, caption, reply_markup)
+    mid = send_text_message(api_base, caption, reply_markup)
+    return mid is not None, mid, logo_key, False
+
+
+def edit_telegram_banner(
+    message_id: int,
+    ep: dict,
+    photo_url: str,
+    title: str,
+    logo_cache: dict[str, Image.Image | None],
+    custom_logos: dict[str, dict],
+    custom_logos_dirty: list[bool],
+) -> bool:
+    banner_bytes = build_banner_image(ep, photo_url, title, logo_cache, custom_logos, custom_logos_dirty)
+    if not banner_bytes:
+        return False
+
+    api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    caption = format_caption(ep)
+    reply_markup = build_reply_markup(ep)
+    media_payload = {
+        "type": "photo",
+        "media": "attach://banner.jpg",
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+
+    resp = telegram_post_with_retry(
+        f"{api_base}/editMessageMedia",
+        data={
+            "chat_id": CHAT_ID,
+            "message_id": str(message_id),
+            "media": json.dumps(media_payload),
+            "reply_markup": json.dumps(reply_markup),
+        },
+        files={"banner.jpg": ("banner.jpg", banner_bytes, "image/jpeg")},
+    )
+    if resp is not None and resp.ok and resp.json().get("ok", False):
+        return True
+
+    status = resp.status_code if resp is not None else "no-resp"
+    detail = resp.text if resp is not None else ""
+    print(f"[editMessageMedia] Errore su message_id={message_id}: {status} {detail}")
+    return False
+
+
+def refresh_existing_messages_for_updated_logos(
+    episodes: list[dict],
+    sent_messages: dict[str, dict],
+    sent_messages_dirty: list[bool],
+    updated_logo_keys: set[str],
+    logo_cache: dict[str, Image.Image | None],
+    custom_logos: dict[str, dict],
+    custom_logos_dirty: list[bool],
+) -> None:
+    if not updated_logo_keys or not sent_messages:
+        return
+
+    ep_by_id: dict[str, dict] = {}
+    for ep in episodes:
+        ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
+        if ep_id:
+            ep_by_id[ep_id] = ep
+
+    updated_count = 0
+    for ep_id, info in sent_messages.items():
+        if not info.get("has_banner"):
+            continue
+        msg_logo_key = str(info.get("logo_key") or "").strip().lower()
+        if msg_logo_key not in updated_logo_keys:
+            continue
+
+        ep = ep_by_id.get(ep_id)
+        if not ep:
+            continue
+
+        photo_url = build_image_url(ep) or str(info.get("photo_url") or "").strip()
+        raw_title = str(ep.get("title") or msg_logo_key).strip()
+        message_id = int(info["message_id"])
+
+        if edit_telegram_banner(message_id, ep, photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty):
+            info["photo_url"] = photo_url
+            sent_messages_dirty[0] = True
+            updated_count += 1
+            print(f"[editMessageMedia] Aggiornata locandina per ep_id={ep_id} (msg={message_id})")
+            time.sleep(1.2)
+
+    if updated_count > 0:
+        print(f"Aggiornate {updated_count} locandine già inviate.")
 
 
 def main() -> None:
@@ -1191,8 +1320,11 @@ def main() -> None:
     custom_logos_dirty = [False]
     dm_state = load_dm_state()
     dm_state_dirty = [False]
+    sent_messages = load_sent_messages()
+    sent_messages_dirty = [False]
+    updated_logo_keys: set[str] = set()
 
-    process_dm_replies(dm_state, custom_logos, custom_logos_dirty, dm_state_dirty)
+    process_dm_replies(dm_state, custom_logos, custom_logos_dirty, dm_state_dirty, updated_logo_keys)
 
     res = requests.get(FEED_URL, headers=HEADERS, timeout=30)
     res.raise_for_status()
@@ -1214,10 +1346,30 @@ def main() -> None:
         ep_id = str(ep.get("id") or ep.get("hash") or "").strip()
         if not ep_id or ep_id in seen:
             continue
-        if send_telegram_item(ep, logo_cache, custom_logos, custom_logos_dirty):
+        ok, mid, logo_key, has_banner = send_telegram_item(ep, logo_cache, custom_logos, custom_logos_dirty)
+        if ok:
             seen.add(ep_id)
             new_sent += 1
+            if mid is not None:
+                sent_messages[ep_id] = {
+                    "message_id": mid,
+                    "logo_key": logo_key,
+                    "photo_url": build_image_url(ep),
+                    "has_banner": has_banner,
+                }
+                sent_messages_dirty[0] = True
             time.sleep(1.5)
+
+    if updated_logo_keys:
+        refresh_existing_messages_for_updated_logos(
+            [ep for ep in episodes if isinstance(ep, dict)],
+            sent_messages,
+            sent_messages_dirty,
+            updated_logo_keys,
+            logo_cache,
+            custom_logos,
+            custom_logos_dirty,
+        )
 
     preview_items: list = []
     if isinstance(payload, dict):
@@ -1240,6 +1392,9 @@ def main() -> None:
 
     if dm_state_dirty[0]:
         save_dm_state(dm_state)
+
+    if sent_messages_dirty[0]:
+        save_sent_messages(sent_messages)
 
     if new_sent > 0:
         save_seen(seen)
