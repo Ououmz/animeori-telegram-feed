@@ -42,9 +42,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen_episodes.json custom_logos.json logo_dm_state.json
+          git add seen_episodes.json custom_logos.json logo_dm_state.json sent_messages.json
           if ! git diff --staged --quiet; then
-            git commit -m "Update state and custom logos"
+            git commit -m "Update state, sent messages, and custom logos"
             git push
           else
             echo "Nessuna modifica ai file di stato"
