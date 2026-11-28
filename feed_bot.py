@@ -58,6 +58,7 @@ def load_sent_messages() -> dict[str, dict]:
                     result[str(ep_id)] = {
                         "message_id": int(info["message_id"]),
                         "logo_key": str(info.get("logo_key") or "").strip().lower(),
+                        "logo_sig": str(info.get("logo_sig") or "").strip(),
                         "photo_url": str(info.get("photo_url") or "").strip(),
                         "has_banner": bool(info.get("has_banner", False)),
                     }
@@ -112,6 +113,15 @@ def save_custom_logos(custom_logos: dict[str, dict]) -> None:
     }
     with open(CUSTOM_LOGOS_FILE, "w", encoding="utf-8") as f:
         json.dump(ordered, f, indent=2, ensure_ascii=False)
+
+
+def get_logo_signature(logo_key: str, custom_logos: dict[str, dict]) -> str:
+    entry = custom_logos.get(logo_key)
+    if not isinstance(entry, dict):
+        return ""
+    fanart_flag = bool(entry.get("fanart", False))
+    url_val = str(entry.get("url") or "").strip()
+    return f"{int(fanart_flag)}|{url_val}"
 
 
 def load_dm_state() -> dict:
@@ -1301,7 +1311,13 @@ def refresh_existing_messages(
         prev_photo_url = str(info.get("photo_url") or "").strip()
         new_photo_url = build_image_url(ep)
 
-        logo_changed = bool(updated_logo_keys and msg_logo_key in updated_logo_keys)
+        prev_logo_sig = str(info.get("logo_sig") or "").strip()
+        current_logo_sig = get_logo_signature(msg_logo_key, custom_logos)
+
+        logo_changed = bool(
+            (updated_logo_keys and msg_logo_key in updated_logo_keys)
+            or (current_logo_sig and current_logo_sig != prev_logo_sig)
+        )
         cover_changed = bool(new_photo_url and new_photo_url != prev_photo_url)
 
         if not logo_changed and not cover_changed:
@@ -1313,6 +1329,7 @@ def refresh_existing_messages(
 
         if edit_telegram_banner(message_id, ep, effective_photo_url, raw_title, logo_cache, custom_logos, custom_logos_dirty):
             info["photo_url"] = effective_photo_url
+            info["logo_sig"] = get_logo_signature(msg_logo_key, custom_logos)
             sent_messages_dirty[0] = True
             updated_count += 1
             reasons = []
@@ -1366,6 +1383,7 @@ def main() -> None:
                 sent_messages[ep_id] = {
                     "message_id": mid,
                     "logo_key": logo_key,
+                    "logo_sig": get_logo_signature(logo_key, custom_logos),
                     "photo_url": build_image_url(ep),
                     "has_banner": has_banner,
                 }
